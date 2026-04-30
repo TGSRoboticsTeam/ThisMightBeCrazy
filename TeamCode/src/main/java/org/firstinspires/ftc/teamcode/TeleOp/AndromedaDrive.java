@@ -262,14 +262,21 @@ public class AndromedaDrive extends LinearOpMode {
                 }
             }
 
-            // Close blocker: B pressed OR auto-close timer expired
-            if (blockerOpen) {
-                boolean bPressed     = bButtonCurrentlyPressed && !bButtonPreviouslyPressed;
-                boolean timerExpired = blockerLaunchTimer.seconds() >= BLOCKER_AUTO_CLOSE_SECONDS;
-                if (bPressed || timerExpired) {
-                    blocker.setPosition(BLOCKER_BLOCKED_POSITION);
-                    blockerOpen = false;
-                }
+            // Close blocker / ABORT: B pressed OR auto-close timer expired
+            boolean bPressed = bButtonCurrentlyPressed && !bButtonPreviouslyPressed;
+            if (bPressed) {
+                // Hard abort — cancel any pending launch, close blocker, kill intakes instantly
+                launchPending = false;
+                blocker.setPosition(BLOCKER_BLOCKED_POSITION);
+                blockerOpen = false;
+                intakeRunning = false;
+                intakeRampingDown = false;
+                topIntake.setPower(0);
+                bottomIntake.setPower(0);
+            } else if (blockerOpen && blockerLaunchTimer.seconds() >= BLOCKER_AUTO_CLOSE_SECONDS) {
+                // Auto-close timer expired — just close blocker, leave intake as-is
+                blocker.setPosition(BLOCKER_BLOCKED_POSITION);
+                blockerOpen = false;
             }
 
             aButtonPreviouslyPressed = aButtonCurrentlyPressed;
