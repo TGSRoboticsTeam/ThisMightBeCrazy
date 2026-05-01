@@ -4,6 +4,7 @@ import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.teamcode.Auto.Waypoint.ActionTiming;
@@ -72,10 +73,10 @@ public class SwerveDriveAuto {
     private static final double WHEELBASE   = 13.544;
     private static final double R           = Math.hypot(TRACK_WIDTH, WHEELBASE);
 
-    private static final double FRONT_LEFT_OFFSET  = 1.34;
-    private static final double FRONT_RIGHT_OFFSET = 3.161;
-    private static final double BACK_LEFT_OFFSET   = 1.589;
-    private static final double BACK_RIGHT_OFFSET  = 1.237;
+    final double FRONT_LEFT_OFFSET  = 0.1200;
+    final double FRONT_RIGHT_OFFSET = 1.3861;
+    final double BACK_LEFT_OFFSET   = 1.6965;
+    final double BACK_RIGHT_OFFSET  = 4.3145;
 
     // ═════════════════════════════════════════════════════════════════════════
     //  HARDWARE
@@ -146,8 +147,8 @@ public class SwerveDriveAuto {
         // ── Motor directions (match justSwerve) ─────────────────────────────
         hw.get(DcMotor.class, "frontLeftDrive") .setDirection(DcMotor.Direction.REVERSE);
         hw.get(DcMotor.class, "backLeftDrive")  .setDirection(DcMotor.Direction.REVERSE);
-        hw.get(DcMotor.class, "frontRightDrive").setDirection(DcMotor.Direction.REVERSE);
-        hw.get(DcMotor.class, "backRightDrive") .setDirection(DcMotor.Direction.REVERSE);
+        hw.get(DcMotor.class, "frontRightDrive").setDirection(DcMotor.Direction.FORWARD);
+        hw.get(DcMotor.class, "backRightDrive") .setDirection(DcMotor.Direction.FORWARD);
 
         hw.get(DcMotor.class, "frontLeftDrive") .setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         hw.get(DcMotor.class, "frontRightDrive").setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
@@ -207,7 +208,7 @@ public class SwerveDriveAuto {
         for (Waypoint wp : waypoints) {
             if (!opMode.opModeIsActive()) break;
             executeMoveToTarget(wp.x, wp.y, wp.heading,
-                                wp.action, wp.timing, wp.approachDistance);
+                    wp.action, wp.timing, wp.approachDistance);
         }
     }
 
@@ -311,7 +312,7 @@ public class SwerveDriveAuto {
             // ── Heading correction ───────────────────────────────────────────
             double headingCorrection = headingPID.calculate(headingError, System.nanoTime());
             headingCorrection = Math.max(-MAX_HEADING_CORRECTION,
-                                Math.min( MAX_HEADING_CORRECTION, headingCorrection));
+                    Math.min( MAX_HEADING_CORRECTION, headingCorrection));
 
             // ── Swerve kinematics (field-relative → module vectors) ──────────
             setSwerveOutputs(driveX, driveY, headingCorrection, poseHeading);
