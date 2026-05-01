@@ -4,6 +4,7 @@ import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.teamcode.Auto.Waypoint.ActionTiming;
 
@@ -115,7 +116,7 @@ public class SwerveDriveAuto {
      * Optionally provide a starting pose if the robot does not start at (0,0,0).
      */
     public void init(double startX, double startY, double startHeading) {
-        var hw = opMode.hardwareMap;
+        HardwareMap hw = opMode.hardwareMap;
 
         // ── Drive modules ───────────────────────────────────────────────────
         frontLeft  = new SwerveModule(

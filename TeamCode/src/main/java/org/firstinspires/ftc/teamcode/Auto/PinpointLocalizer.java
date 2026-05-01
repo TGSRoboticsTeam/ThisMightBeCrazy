@@ -30,7 +30,7 @@ public class PinpointLocalizer {
     // ═════════════════════════════════════════════════════════════════════════
 
     /** Must match the name in your Driver Hub hardware configuration. */
-    private static final String DEVICE_NAME = "pinpoint";
+    private static final String DEVICE_NAME = "odo";
 
     /**
      * Offset of the odometry pods from your chosen tracking point (usually robot center).
