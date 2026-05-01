@@ -39,12 +39,11 @@ public class AndromedaDrive extends LinearOpMode {
     // ============================================================
     //   SERVO POSITIONS  <-- SET YOUR VALUES HERE
     // ============================================================
-    final double BLOCKER_BLOCKED_POSITION   = 0.0;  // Blocker: blocking launch
-    final double BLOCKER_LAUNCH_POSITION    = 1.0;  // Blocker: allowing launch
-    final double BLOCKER_AUTO_CLOSE_SECONDS = 3.0;  // Blocker: auto-return delay (seconds)
+    final double BLOCKER_BLOCKED_POSITION = 0.15;
+    final double BLOCKER_LAUNCH_POSITION  = 0.45;
 
-    final double LIFT_START_POSITION    = 0.0;  // Lift: retracted / start
-    final double LIFT_ENGAGED_POSITION  = 1.0;  // Lift: extended / engaged
+    final double LIFT_START_POSITION   = 0.0;
+    final double LIFT_ENGAGED_POSITION = 1.0;
     // ============================================================
 
     // --- 2. ROBOT GEOMETRY ---
@@ -53,25 +52,24 @@ public class AndromedaDrive extends LinearOpMode {
     final double R = Math.hypot(TRACK_WIDTH, WHEELBASE);
 
     // --- 3. OFFSETS (Your measured values) ---
-    final double FRONT_LEFT_OFFSET  = 0.1200;
-    final double FRONT_RIGHT_OFFSET = 1.3861;
-    final double BACK_LEFT_OFFSET   = 1.6965;
-    final double BACK_RIGHT_OFFSET  = 4.3145;
+    final double FRONT_LEFT_OFFSET  = 1.34;
+    final double FRONT_RIGHT_OFFSET = 3.161;
+    final double BACK_LEFT_OFFSET   = 1.589;
+    final double BACK_RIGHT_OFFSET  = 1.237;
 
     // --- 4. TUNING PARAMETERS ---
-    final double STEER_KP = 0.6;
+    final double STEER_KP       = 0.6;
     final double DRIVE_DEADBAND = 0.05;
     final double STEER_DEADBAND = 0.05;
+    // Minimum servo power to overcome static friction on steering.
+    // Raise if pods are slow to reach position; lower if they oscillate.
+    final double STEER_MIN_POWER = 0.08;
 
     // --- 5. SPEED CONTROL CONSTANTS ---
     final double MAX_SPEED_GLOBAL    = 0.8;
     final double MAX_SPEED_SLOW_MODE = 0.2;
 
     // --- 6. FLYWHEEL / INTAKE CONSTANTS ---
-    // How long flywheels must be spinning before launch is allowed (seconds)
-    final double FLYWHEEL_SPINUP_TIME_REQUIRED  = 0.7;
-    // How long to wait for intakes to spin up before opening blocker (seconds)
-    final double INTAKE_LAUNCH_SPINUP_SECONDS   = 0.25;
     // Ramp-down time in seconds for flywheels and intakes when toggled off
     final double MOTOR_COAST_RAMP_SECONDS = 0.5;
 
@@ -86,19 +84,9 @@ public class AndromedaDrive extends LinearOpMode {
     private boolean flywheelRunning = false;
     private boolean leftTriggerPreviouslyPressed = false;
 
-    // Flywheel spin-up timer (tracks how long flywheels have been running)
-    private ElapsedTime flywheelTimer = new ElapsedTime();
-    private boolean flywheelTimerRunning = false;
-
-    // Blocker state
+    // Blocker — A = launch, B = blocked
     private boolean aButtonPreviouslyPressed = false;
     private boolean bButtonPreviouslyPressed = false;
-    private boolean blockerOpen = false;
-    private ElapsedTime blockerLaunchTimer = new ElapsedTime();
-
-    // Pending launch state (A pressed — waiting for intake spinup before opening blocker)
-    private boolean launchPending = false;
-    private ElapsedTime launchIntakeSpinupTimer = new ElapsedTime();
 
     // Ramp-down state for graceful coast-to-stop
     private boolean intakeRampingDown  = false;
@@ -126,10 +114,10 @@ public class AndromedaDrive extends LinearOpMode {
         lift.setPosition(LIFT_START_POSITION);
 
         telemetry.addLine("AndromedaDrive ready.");
-        telemetry.addLine("G1 Right Trigger: toggle intakes (topIntake + bottomIntake)");
-        telemetry.addLine("G1 Left Trigger:  toggle flywheels (leftFly + rightFly)");
-        telemetry.addLine("G1 A:             launch (requires flywheels spun >=0.7s)");
-        telemetry.addLine("G1 B:             close blocker early");
+        telemetry.addLine("G1 Right Trigger: toggle intakes");
+        telemetry.addLine("G1 Left Trigger:  toggle flywheels");
+        telemetry.addLine("G1 A:             blocker -> launch position");
+        telemetry.addLine("G1 B:             blocker -> blocked position");
         telemetry.addLine("G1 X + Y:         toggle lift (stationary only)");
         telemetry.addLine("G1 dpad_up:       reset field heading");
         telemetry.addLine("G1 RB:            slow mode");
@@ -137,8 +125,6 @@ public class AndromedaDrive extends LinearOpMode {
         telemetry.update();
 
         waitForStart();
-
-        flywheelTimer.reset();
 
         double targetAngleFL = 0, targetAngleFR = 0, targetAngleBL = 0, targetAngleBR = 0;
 
@@ -188,18 +174,14 @@ public class AndromedaDrive extends LinearOpMode {
             boolean leftTriggerCurrentlyPressed = gamepad1.left_trigger > 0.5;
             if (leftTriggerCurrentlyPressed && !leftTriggerPreviouslyPressed) {
                 if (flywheelRunning) {
-                    // Begin ramp-down
                     flywheelRampingDown = true;
                     flywheelRampTimer.reset();
                     double voltage = voltageSensor.getVoltage();
                     flywheelRampStartPower = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
                     flywheelRunning = false;
-                    flywheelTimerRunning = false;
                 } else {
                     flywheelRampingDown = false;
                     flywheelRunning = true;
-                    flywheelTimer.reset();   // restart spin-up timer
-                    flywheelTimerRunning = true;
                 }
             }
             leftTriggerPreviouslyPressed = leftTriggerCurrentlyPressed;
@@ -223,61 +205,15 @@ public class AndromedaDrive extends LinearOpMode {
             rightFly.setPower(flywheelPower);
 
             // ============================================================
-            //   BLOCKER / LAUNCH  (A to open, B or timer to close)
-            //   Sequence on A press:
-            //     1. Ensure intakes are running (force on if not).
-            //     2. Wait INTAKE_LAUNCH_SPINUP_SECONDS for them to spin up.
-            //     3. If flywheels have also been running >= FLYWHEEL_SPINUP_TIME_REQUIRED,
-            //        open the blocker. Otherwise rumble and abort.
+            //   BLOCKER  (A = launch position, B = blocked position)
             // ============================================================
             boolean aButtonCurrentlyPressed = gamepad1.a;
             boolean bButtonCurrentlyPressed = gamepad1.b;
 
-            // A pressed — kick off launch sequence
-            if (aButtonCurrentlyPressed && !aButtonPreviouslyPressed) {
-                // Force intakes on if they weren't already
-                if (!intakeRunning) {
-                    intakeRampingDown = false;
-                    intakeRunning = true;
-                }
-                // Start (or restart) the intake spinup wait
-                launchPending = true;
-                launchIntakeSpinupTimer.reset();
-            }
-
-            // While launch is pending, wait for intake spinup delay to elapse
-            if (launchPending) {
-                if (launchIntakeSpinupTimer.seconds() >= INTAKE_LAUNCH_SPINUP_SECONDS) {
-                    launchPending = false;
-                    boolean flywheelsReady =
-                            flywheelRunning && flywheelTimer.seconds() >= FLYWHEEL_SPINUP_TIME_REQUIRED;
-                    if (flywheelsReady) {
-                        blocker.setPosition(BLOCKER_LAUNCH_POSITION);
-                        blockerOpen = true;
-                        blockerLaunchTimer.reset();
-                    } else {
-                        // Flywheels not ready — rumble and leave blocker closed
-                        gamepad1.rumble(0.5, 0.5, 200);
-                    }
-                }
-            }
-
-            // Close blocker / ABORT: B pressed OR auto-close timer expired
-            boolean bPressed = bButtonCurrentlyPressed && !bButtonPreviouslyPressed;
-            if (bPressed) {
-                // Hard abort — cancel any pending launch, close blocker, kill intakes instantly
-                launchPending = false;
+            if (aButtonCurrentlyPressed && !aButtonPreviouslyPressed)
+                blocker.setPosition(BLOCKER_LAUNCH_POSITION);
+            if (bButtonCurrentlyPressed && !bButtonPreviouslyPressed)
                 blocker.setPosition(BLOCKER_BLOCKED_POSITION);
-                blockerOpen = false;
-                intakeRunning = false;
-                intakeRampingDown = false;
-                topIntake.setPower(0);
-                bottomIntake.setPower(0);
-            } else if (blockerOpen && blockerLaunchTimer.seconds() >= BLOCKER_AUTO_CLOSE_SECONDS) {
-                // Auto-close timer expired — just close blocker, leave intake as-is
-                blocker.setPosition(BLOCKER_BLOCKED_POSITION);
-                blockerOpen = false;
-            }
 
             aButtonPreviouslyPressed = aButtonCurrentlyPressed;
             bButtonPreviouslyPressed = bButtonCurrentlyPressed;
@@ -290,8 +226,8 @@ public class AndromedaDrive extends LinearOpMode {
             // Compute driverActive here so the lift block and the swerve block both use it
             boolean driverActive =
                     Math.abs(gamepad1.left_stick_x)  > DRIVE_DEADBAND ||
-                            Math.abs(gamepad1.left_stick_y)  > DRIVE_DEADBAND ||
-                            Math.abs(gamepad1.right_stick_x) > DRIVE_DEADBAND;
+                    Math.abs(gamepad1.left_stick_y)  > DRIVE_DEADBAND ||
+                    Math.abs(gamepad1.right_stick_x) > DRIVE_DEADBAND;
             boolean xButtonCurrentlyPressed = gamepad1.x;
             boolean yButtonCurrentlyPressed = gamepad1.y;
             boolean xPressed = xButtonCurrentlyPressed && !xButtonPreviouslyPressed;
@@ -407,12 +343,7 @@ public class AndromedaDrive extends LinearOpMode {
             telemetry.addData("Intake",      intakeRunning ? "RUNNING" : (intakeRampingDown ? "RAMPING DOWN" : "OFF"));
             telemetry.addData("IntakePwr",   "%.2f", intakePower);
             telemetry.addData("Flywheel",    flywheelRunning ? "RUNNING" : (flywheelRampingDown ? "RAMPING DOWN" : "OFF"));
-            telemetry.addData("FlywheelPwr", "%.2f", flywheelPower);
-            telemetry.addData("FlySpinTime", "%.2f s (need %.1f)", flywheelTimerRunning ? flywheelTimer.seconds() : 0.0, FLYWHEEL_SPINUP_TIME_REQUIRED);
-            telemetry.addData("FlyReady",    flywheelRunning && flywheelTimer.seconds() >= FLYWHEEL_SPINUP_TIME_REQUIRED ? "YES" : "NO");
-            telemetry.addData("Blocker",     blockerOpen
-                    ? String.format("OPEN (auto-close in %.1fs)", BLOCKER_AUTO_CLOSE_SECONDS - blockerLaunchTimer.seconds())
-                    : "BLOCKED");
+            telemetry.addData("Blocker",     blocker.getPosition() == BLOCKER_LAUNCH_POSITION ? "LAUNCH" : "BLOCKED");
             telemetry.addData("Lift",        liftEngaged ? "ENGAGED" : "START");
 
             telemetry.addLine("=== FIELD CENTRIC INPUTS ===");
@@ -552,7 +483,16 @@ public class AndromedaDrive extends LinearOpMode {
         }
 
         double servoPower = STEER_KP * delta * -1;
-        if (Math.abs(servoPower) < STEER_DEADBAND) servoPower = 0;
+
+        // Enforce minimum power outside deadband so static friction
+        // can't stall the servo on small corrections
+        if (Math.abs(servoPower) > STEER_DEADBAND) {
+            if (servoPower > 0 && servoPower < STEER_MIN_POWER)  servoPower =  STEER_MIN_POWER;
+            if (servoPower < 0 && servoPower > -STEER_MIN_POWER) servoPower = -STEER_MIN_POWER;
+        } else {
+            servoPower = 0;
+        }
+
         servoPower = Math.max(-1, Math.min(1, servoPower));
 
         // Normalise drive power to 12 V: scale requested power by (12 / batteryVoltage)
