@@ -16,7 +16,7 @@ import com.qualcomm.robotcore.hardware.VoltageSensor;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 //@Disabled
 @TeleOp(name = "justSwerve", group = "Swerve")
-@Disabled
+//@Disabled
 public class justSwerve extends LinearOpMode {
 
     // --- 1. HARDWARE DECLARATIONS ---
@@ -33,10 +33,10 @@ public class justSwerve extends LinearOpMode {
     final double R = Math.hypot(TRACK_WIDTH, WHEELBASE);
 
     // --- 3. CRITICAL: OFFSETS (Using your measured values) ---
-    final double FRONT_LEFT_OFFSET  = 1.34;
-    final double FRONT_RIGHT_OFFSET = 3.161;
-    final double BACK_LEFT_OFFSET   = 1.589;
-    final double BACK_RIGHT_OFFSET  = 1.237;
+    final double FRONT_LEFT_OFFSET  = 0.1200;
+    final double FRONT_RIGHT_OFFSET = 1.3861;
+    final double BACK_LEFT_OFFSET   = 1.6965;
+    final double BACK_RIGHT_OFFSET  = 4.3145;
 
     // --- 4. TUNING PARAMETERS ---
     final double STEER_KP = 0.6;

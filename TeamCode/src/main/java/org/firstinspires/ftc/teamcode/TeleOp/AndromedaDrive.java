@@ -53,10 +53,10 @@ public class AndromedaDrive extends LinearOpMode {
     final double R = Math.hypot(TRACK_WIDTH, WHEELBASE);
 
     // --- 3. OFFSETS (Your measured values) ---
-    final double FRONT_LEFT_OFFSET  = 1.34;
-    final double FRONT_RIGHT_OFFSET = 3.161;
-    final double BACK_LEFT_OFFSET   = 1.589;
-    final double BACK_RIGHT_OFFSET  = 1.237;
+    final double FRONT_LEFT_OFFSET  = 0.1200;
+    final double FRONT_RIGHT_OFFSET = 1.3861;
+    final double BACK_LEFT_OFFSET   = 1.6965;
+    final double BACK_RIGHT_OFFSET  = 4.3145;
 
     // --- 4. TUNING PARAMETERS ---
     final double STEER_KP = 0.6;
@@ -286,6 +286,12 @@ public class AndromedaDrive extends LinearOpMode {
             //   LIFT SERVO  (X + Y simultaneously, only while stationary)
             //   Toggles between LIFT_START_POSITION and LIFT_ENGAGED_POSITION
             // ============================================================
+
+            // Compute driverActive here so the lift block and the swerve block both use it
+            boolean driverActive =
+                    Math.abs(gamepad1.left_stick_x)  > DRIVE_DEADBAND ||
+                            Math.abs(gamepad1.left_stick_y)  > DRIVE_DEADBAND ||
+                            Math.abs(gamepad1.right_stick_x) > DRIVE_DEADBAND;
             boolean xButtonCurrentlyPressed = gamepad1.x;
             boolean yButtonCurrentlyPressed = gamepad1.y;
             boolean xPressed = xButtonCurrentlyPressed && !xButtonPreviouslyPressed;
@@ -365,10 +371,7 @@ public class AndromedaDrive extends LinearOpMode {
                 speedBackRight  /= maxSpeed;
             }
 
-            boolean driverActive =
-                    Math.abs(fieldX) > DRIVE_DEADBAND ||
-                    Math.abs(fieldY) > DRIVE_DEADBAND ||
-                    Math.abs(rot)    > DRIVE_DEADBAND;
+            // driverActive already computed above from raw stick values
 
             if (driverActive) {
                 targetAngleFL = Math.atan2(B, D);
@@ -388,10 +391,14 @@ public class AndromedaDrive extends LinearOpMode {
                 speedFrontLeft = 0; speedFrontRight = 0; speedBackLeft = 0; speedBackRight = 0;
             }
 
-            ModuleDebug fl = runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  speedFrontLeft,  targetAngleFL, "FL");
-            ModuleDebug fr = runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, speedFrontRight, targetAngleFR, "FR");
-            ModuleDebug bl = runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   speedBackLeft,   targetAngleBL, "BL");
-            ModuleDebug br = runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  speedBackRight,  targetAngleBR, "BR");
+            // 12 V normalisation factor — computed once per loop for efficiency
+            double voltage = voltageSensor.getVoltage();
+            double voltageFactor = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
+
+            ModuleDebug fl = runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  speedFrontLeft,  targetAngleFL, "FL", voltageFactor);
+            ModuleDebug fr = runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, speedFrontRight, targetAngleFR, "FR", voltageFactor);
+            ModuleDebug bl = runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   speedBackLeft,   targetAngleBL, "BL", voltageFactor);
+            ModuleDebug br = runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  speedBackRight,  targetAngleBR, "BR", voltageFactor);
 
             // ============================================================
             //   TELEMETRY
@@ -431,7 +438,7 @@ public class AndromedaDrive extends LinearOpMode {
             telemetry.addData("BR", br.toShortString());
 
             telemetry.addLine("=== SYSTEM ===");
-            telemetry.addData("Voltage", "%.2f V", voltageSensor.getVoltage());
+            telemetry.addData("Voltage",       "%.2f V (factor %.3f)", voltage, voltageFactor);
             telemetry.update();
         }
     }
@@ -527,7 +534,8 @@ public class AndromedaDrive extends LinearOpMode {
 
     private ModuleDebug runModule(
             DcMotor driveMotor, CRServo steerServo, AnalogInput encoder,
-            double encoderOffset, double speed, double targetAngle, String name
+            double encoderOffset, double speed, double targetAngle, String name,
+            double voltageFactor
     ) {
         ModuleDebug dbg = new ModuleDebug();
         dbg.name = name;
@@ -547,16 +555,20 @@ public class AndromedaDrive extends LinearOpMode {
         if (Math.abs(servoPower) < STEER_DEADBAND) servoPower = 0;
         servoPower = Math.max(-1, Math.min(1, servoPower));
 
-        steerServo.setPower(servoPower);
-        driveMotor.setPower(speed);
+        // Normalise drive power to 12 V: scale requested power by (12 / batteryVoltage)
+        double normalisedSpeed = speed * voltageFactor;
+        normalisedSpeed = Math.max(-1, Math.min(1, normalisedSpeed));
 
-        dbg.rawAngle    = rawAngle;
+        steerServo.setPower(servoPower);
+        driveMotor.setPower(normalisedSpeed);
+
+        dbg.rawAngle     = rawAngle;
         dbg.currentAngle = currentAngle;
-        dbg.targetAngle = targetAngle;
-        dbg.delta       = delta;
-        dbg.servoPower  = servoPower;
-        dbg.drivePower  = speed;
-        dbg.flipped     = flipped;
+        dbg.targetAngle  = targetAngle;
+        dbg.delta        = delta;
+        dbg.servoPower   = servoPower;
+        dbg.drivePower   = normalisedSpeed;
+        dbg.flipped      = flipped;
         return dbg;
     }
 

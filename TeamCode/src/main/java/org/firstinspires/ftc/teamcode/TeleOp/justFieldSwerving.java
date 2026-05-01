@@ -11,7 +11,7 @@ import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
-@Disabled
+//@Disabled
 @TeleOp(name = "justFieldSwerving", group = "Swerve")
 public class justFieldSwerving extends LinearOpMode {
 
@@ -28,10 +28,10 @@ public class justFieldSwerving extends LinearOpMode {
     final double R = Math.hypot(TRACK_WIDTH, WHEELBASE);
 
     // --- 3. OFFSETS (Your measured values) ---
-    final double FRONT_LEFT_OFFSET  = 1.34;
-    final double FRONT_RIGHT_OFFSET = 3.161;
-    final double BACK_LEFT_OFFSET   = 1.589;
-    final double BACK_RIGHT_OFFSET  = 1.237;
+    final double FRONT_LEFT_OFFSET  = 0.1200;
+    final double FRONT_RIGHT_OFFSET = 1.3861;
+    final double BACK_LEFT_OFFSET   = 1.6965;
+    final double BACK_RIGHT_OFFSET  = 4.3145;
 
     // --- 4. TUNING PARAMETERS ---
     final double STEER_KP = 0.6;
