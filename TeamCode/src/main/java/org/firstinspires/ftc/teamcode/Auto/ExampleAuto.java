@@ -51,13 +51,16 @@ public class ExampleAuto extends LinearOpMode {
         drive.followPath(new Waypoint[]{
 
             // 1. Drive forward 24 inches, no action
-            new Waypoint(24, 0, 0),
+           // new Waypoint(24, 0, 0),
 
             // 2. Strafe left 24 inches, raise lift on arrival
-            new Waypoint(24, 24, 0, () -> {
+           new Waypoint(24, 24, 0, () -> {
                 // lift.setTarget(800);
                 sleep(300);   // wait for lift to reach height
             }),
+
+            //2.5
+            /*new Waypoint(24,24,Math.PI),
 
             // 3. Turn 90° left while driving to next point
             new Waypoint(36, 24, Math.PI / 2),
@@ -70,7 +73,7 @@ public class ExampleAuto extends LinearOpMode {
                     }),
 
             // 5. Drive back to origin, lower lift on arrival
-            new Waypoint(0, 0, 0, () -> {
+           */ new Waypoint(0, 0, 0, () -> {
                 // lift.setTarget(0);
             }),
         });

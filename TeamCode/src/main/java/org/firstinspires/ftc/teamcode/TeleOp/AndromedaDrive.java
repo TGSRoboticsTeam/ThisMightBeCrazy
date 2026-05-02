@@ -165,8 +165,8 @@ public class AndromedaDrive extends LinearOpMode {
                     intakePower = intakeRampStartPower * (1.0 - fraction);
                 }
             }
-            topIntake.setPower(intakePower);
-            bottomIntake.setPower(intakePower);
+            topIntake.setPower(-intakePower);
+            bottomIntake.setPower(-intakePower);
 
             // ============================================================
             //   FLYWHEEL TOGGLE  (Left Trigger — press = on, press again = off)
