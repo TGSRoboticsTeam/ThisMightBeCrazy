@@ -36,6 +36,17 @@ public class AndromedaDrive extends LinearOpMode {
     private boolean xButtonPreviouslyPressed = false;
     private boolean yButtonPreviouslyPressed = false;
 
+    // --- PTO SERVO ---
+    private Servo pto;
+    private boolean ptoEngaged = false;
+    private boolean ptoDpadUpPreviouslyPressed = false;
+
+    // --- TURRET SERVOS ---
+    private Servo leftTurret, rightTurret;
+    private double turretPosition = 0.5;
+    final double TURRET_SPEED    = 0.008; // position units per loop tick
+    final double TURRET_DEADBAND = 0.05;
+
     // ============================================================
     //   SERVO POSITIONS  <-- SET YOUR VALUES HERE
     // ============================================================
@@ -44,6 +55,9 @@ public class AndromedaDrive extends LinearOpMode {
 
     final double LIFT_START_POSITION   = 0.0;
     final double LIFT_ENGAGED_POSITION = 1.0;
+
+    final double PTO_DISENGAGED = 0.7;
+    final double PTO_ENGAGED    = 0.5;
     // ============================================================
 
     // --- 2. ROBOT GEOMETRY ---
@@ -51,18 +65,15 @@ public class AndromedaDrive extends LinearOpMode {
     final double WHEELBASE   = 13.544;
     final double R = Math.hypot(TRACK_WIDTH, WHEELBASE);
 
-    // --- 3. OFFSETS (Your measured values) ---
-    final double FRONT_LEFT_OFFSET  = 1.34;
-    final double FRONT_RIGHT_OFFSET = 3.161;
-    final double BACK_LEFT_OFFSET   = 1.589;
-    final double BACK_RIGHT_OFFSET  = 1.237;
+    final double FRONT_LEFT_OFFSET  = 0.1200;
+    final double FRONT_RIGHT_OFFSET = 1.3861;
+    final double BACK_LEFT_OFFSET   = 1.6965;
+    final double BACK_RIGHT_OFFSET  = 0.8225;
 
     // --- 4. TUNING PARAMETERS ---
-    final double STEER_KP       = 0.6;
-    final double DRIVE_DEADBAND = 0.05;
-    final double STEER_DEADBAND = 0.05;
-    // Minimum servo power to overcome static friction on steering.
-    // Raise if pods are slow to reach position; lower if they oscillate.
+    final double STEER_KP        = 0.6;
+    final double DRIVE_DEADBAND  = 0.05;
+    final double STEER_DEADBAND  = 0.05;
     final double STEER_MIN_POWER = 0.08;
 
     // --- 5. SPEED CONTROL CONSTANTS ---
@@ -70,8 +81,12 @@ public class AndromedaDrive extends LinearOpMode {
     final double MAX_SPEED_SLOW_MODE = 0.2;
 
     // --- 6. FLYWHEEL / INTAKE CONSTANTS ---
-    // Ramp-down time in seconds for flywheels and intakes when toggled off
     final double MOTOR_COAST_RAMP_SECONDS = 0.5;
+
+    // --- 6b. INTAKE SPEED PRESETS ---
+    final double INTAKE_SPEED_HIGH = 0.90; // dpad_up
+    final double INTAKE_SPEED_LOW  = 0.60; // dpad_down
+    private double intakeSpeedTarget = INTAKE_SPEED_HIGH; // default
 
     // --- 7. TOGGLES / STATES ---
     private boolean rightStickButtonPreviouslyPressed = false;
@@ -89,39 +104,44 @@ public class AndromedaDrive extends LinearOpMode {
     private boolean bButtonPreviouslyPressed = false;
 
     // Ramp-down state for graceful coast-to-stop
-    private boolean intakeRampingDown  = false;
+    private boolean intakeRampingDown   = false;
     private boolean flywheelRampingDown = false;
-    private ElapsedTime intakeRampTimer    = new ElapsedTime();
-    private ElapsedTime flywheelRampTimer  = new ElapsedTime();
-    private double intakeRampStartPower    = 0.0;
-    private double flywheelRampStartPower  = 0.0;
+    private ElapsedTime intakeRampTimer   = new ElapsedTime();
+    private ElapsedTime flywheelRampTimer = new ElapsedTime();
+    private double intakeRampStartPower   = 0.0;
+    private double flywheelRampStartPower = 0.0;
 
     // Wheel 'planting'
     final int FRAMES_TO_PLANT_WHEELS = 5;
     private int framesSinceLastMoved = 0;
 
-    // Heading debug / optional offset
+    // Heading
     private double headingOffset = 0.0;
-    private boolean dpadUpPrev = false;
+    private boolean dpadUpPrev   = false;
+    private boolean dpadDownPrev = false;
 
     @Override
     public void runOpMode() {
         initializeHardware();
 
-        // Start blocker in blocked position
         blocker.setPosition(BLOCKER_BLOCKED_POSITION);
-        // Start lift in retracted position
         lift.setPosition(LIFT_START_POSITION);
+        pto.setPosition(PTO_DISENGAGED);
+        leftTurret.setPosition(turretPosition);
+        rightTurret.setPosition(turretPosition);
 
         telemetry.addLine("AndromedaDrive ready.");
-        telemetry.addLine("G1 Right Trigger: toggle intakes");
-        telemetry.addLine("G1 Left Trigger:  toggle flywheels");
-        telemetry.addLine("G1 A:             blocker -> launch position");
-        telemetry.addLine("G1 B:             blocker -> blocked position");
-        telemetry.addLine("G1 X + Y:         toggle lift (stationary only)");
-        telemetry.addLine("G1 dpad_up:       reset field heading");
-        telemetry.addLine("G1 RB:            slow mode");
-        telemetry.addLine("G1 L3:            lock wheels (X)");
+        telemetry.addLine("G1 Right Trigger:  toggle intakes / PTO reverse when PTO active");
+        telemetry.addLine("G1 Left Trigger:   toggle flywheels / PTO forward when PTO active");
+        telemetry.addLine("G1 A:              blocker -> launch position");
+        telemetry.addLine("G1 B:              blocker -> blocked position");
+        telemetry.addLine("G1 X + Y:          toggle lift (stationary only)");
+        telemetry.addLine("G1 dpad_up:        intake 90% / reset heading");
+        telemetry.addLine("G1 dpad_down:      intake 60%");
+        telemetry.addLine("G1 RB + dpad_up:   toggle PTO engaged/disengaged");
+        telemetry.addLine("G1 RB:             slow mode (when PTO inactive)");
+        telemetry.addLine("G1 L3:             lock wheels (X)");
+        telemetry.addLine("G2 Left Stick X:   turret");
         telemetry.update();
 
         waitForStart();
@@ -130,73 +150,120 @@ public class AndromedaDrive extends LinearOpMode {
 
         while (opModeIsActive()) {
 
-            // ============================================================
-            //   INTAKE TOGGLE  (Right Trigger — press = on, press again = off)
-            // ============================================================
-            boolean rightTriggerCurrentlyPressed = gamepad1.right_trigger > 0.5;
-            if (rightTriggerCurrentlyPressed && !rightTriggerPreviouslyPressed) {
-                if (intakeRunning) {
-                    // Begin ramp-down instead of hard stop
-                    intakeRampingDown = true;
-                    intakeRampTimer.reset();
-                    // Capture the current target power as the ramp start
-                    double voltage = voltageSensor.getVoltage();
-                    intakeRampStartPower = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
-                    intakeRunning = false;
-                } else {
-                    intakeRampingDown = false; // cancel any in-progress ramp
-                    intakeRunning = true;
-                }
-            }
-            rightTriggerPreviouslyPressed = rightTriggerCurrentlyPressed;
+            boolean rbHeld = gamepad1.right_bumper;
 
-            // Compute intake power
+            // ============================================================
+            //   PTO TOGGLE  (RB held + Dpad Up, rising edge)
+            // ============================================================
+            boolean ptoDpadUpNow = gamepad1.dpad_up && rbHeld;
+            if (ptoDpadUpNow && !ptoDpadUpPreviouslyPressed) {
+                ptoEngaged = !ptoEngaged;
+                pto.setPosition(ptoEngaged ? PTO_ENGAGED : PTO_DISENGAGED);
+            }
+            ptoDpadUpPreviouslyPressed = ptoDpadUpNow;
+
+            // ============================================================
+            //   INTAKE SPEED PRESETS  (dpad_up = 90%, dpad_down = 60%)
+            //   dpad_up also resets field heading — only when RB is NOT held
+            // ============================================================
+            boolean dpadUpNow   = gamepad1.dpad_up;
+            boolean dpadDownNow = gamepad1.dpad_down;
+
+            if (dpadUpNow && !dpadUpPrev && !rbHeld) {
+                intakeSpeedTarget = INTAKE_SPEED_HIGH;
+                imu.resetYaw();
+                headingOffset = 0.0;
+            }
+            if (dpadDownNow && !dpadDownPrev) {
+                intakeSpeedTarget = INTAKE_SPEED_LOW;
+            }
+            dpadUpPrev   = dpadUpNow;
+            dpadDownPrev = dpadDownNow;
+
+            // ============================================================
+            //   INTAKE / PTO MOTOR CONTROL
+            //   PTO active:  left trigger  = intakes forward (analog)
+            //                right trigger = intakes backward (analog)
+            //   PTO inactive: right trigger toggles intake as before
+            // ============================================================
             double intakePower = 0.0;
-            if (intakeRunning) {
-                double voltage = voltageSensor.getVoltage();
-                intakePower = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
-            } else if (intakeRampingDown) {
-                double elapsed = intakeRampTimer.seconds();
-                double fraction = elapsed / MOTOR_COAST_RAMP_SECONDS;
-                if (fraction >= 1.0) {
-                    intakeRampingDown = false;
-                    intakePower = 0.0;
-                } else {
-                    intakePower = intakeRampStartPower * (1.0 - fraction);
+
+            if (ptoEngaged) {
+                // Direct analog control via triggers; clear toggle state so normal
+                // mode resumes cleanly when PTO is disengaged.
+                double leftTrig  = gamepad1.left_trigger;
+                double rightTrig = gamepad1.right_trigger;
+
+                if (leftTrig > 0.05) {
+                    intakePower = leftTrig;
+                } else if (rightTrig > 0.05) {
+                    intakePower = -rightTrig;
+                }
+
+                intakeRunning     = false;
+                intakeRampingDown = false;
+                rightTriggerPreviouslyPressed = rightTrig > 0.5;
+                leftTriggerPreviouslyPressed  = leftTrig  > 0.5;
+
+            } else {
+                // Normal intake toggle (right trigger)
+                boolean rightTriggerCurrentlyPressed = gamepad1.right_trigger > 0.5;
+                if (rightTriggerCurrentlyPressed && !rightTriggerPreviouslyPressed) {
+                    if (intakeRunning) {
+                        intakeRampingDown    = true;
+                        intakeRampStartPower = intakeSpeedTarget;
+                        intakeRampTimer.reset();
+                        intakeRunning = false;
+                    } else {
+                        intakeRampingDown = false;
+                        intakeRunning     = true;
+                    }
+                }
+                rightTriggerPreviouslyPressed = rightTriggerCurrentlyPressed;
+
+                if (intakeRunning) {
+                    intakePower = intakeSpeedTarget;
+                } else if (intakeRampingDown) {
+                    double fraction = intakeRampTimer.seconds() / MOTOR_COAST_RAMP_SECONDS;
+                    if (fraction >= 1.0) {
+                        intakeRampingDown = false;
+                    } else {
+                        intakePower = intakeRampStartPower * (1.0 - fraction);
+                    }
                 }
             }
+
             topIntake.setPower(-intakePower);
             bottomIntake.setPower(-intakePower);
 
             // ============================================================
-            //   FLYWHEEL TOGGLE  (Left Trigger — press = on, press again = off)
+            //   FLYWHEEL TOGGLE  (Left Trigger — unaffected by PTO)
             // ============================================================
-            boolean leftTriggerCurrentlyPressed = gamepad1.left_trigger > 0.5;
-            if (leftTriggerCurrentlyPressed && !leftTriggerPreviouslyPressed) {
-                if (flywheelRunning) {
-                    flywheelRampingDown = true;
-                    flywheelRampTimer.reset();
-                    double voltage = voltageSensor.getVoltage();
-                    flywheelRampStartPower = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
-                    flywheelRunning = false;
-                } else {
-                    flywheelRampingDown = false;
-                    flywheelRunning = true;
+            if (!ptoEngaged) {
+                boolean leftTriggerCurrentlyPressed = gamepad1.left_trigger > 0.5;
+                if (leftTriggerCurrentlyPressed && !leftTriggerPreviouslyPressed) {
+                    if (flywheelRunning) {
+                        double voltage = voltageSensor.getVoltage();
+                        flywheelRampStartPower = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
+                        flywheelRampingDown    = true;
+                        flywheelRampTimer.reset();
+                        flywheelRunning = false;
+                    } else {
+                        flywheelRampingDown = false;
+                        flywheelRunning     = true;
+                    }
                 }
+                leftTriggerPreviouslyPressed = leftTriggerCurrentlyPressed;
             }
-            leftTriggerPreviouslyPressed = leftTriggerCurrentlyPressed;
 
-            // Compute flywheel power
             double flywheelPower = 0.0;
             if (flywheelRunning) {
                 double voltage = voltageSensor.getVoltage();
                 flywheelPower = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
             } else if (flywheelRampingDown) {
-                double elapsed = flywheelRampTimer.seconds();
-                double fraction = elapsed / MOTOR_COAST_RAMP_SECONDS;
+                double fraction = flywheelRampTimer.seconds() / MOTOR_COAST_RAMP_SECONDS;
                 if (fraction >= 1.0) {
                     flywheelRampingDown = false;
-                    flywheelPower = 0.0;
                 } else {
                     flywheelPower = flywheelRampStartPower * (1.0 - fraction);
                 }
@@ -205,7 +272,7 @@ public class AndromedaDrive extends LinearOpMode {
             rightFly.setPower(flywheelPower);
 
             // ============================================================
-            //   BLOCKER  (A = launch position, B = blocked position)
+            //   BLOCKER  (A = launch, B = blocked)
             // ============================================================
             boolean aButtonCurrentlyPressed = gamepad1.a;
             boolean bButtonCurrentlyPressed = gamepad1.b;
@@ -219,28 +286,23 @@ public class AndromedaDrive extends LinearOpMode {
             bButtonPreviouslyPressed = bButtonCurrentlyPressed;
 
             // ============================================================
-            //   LIFT SERVO  (X + Y simultaneously, only while stationary)
-            //   Toggles between LIFT_START_POSITION and LIFT_ENGAGED_POSITION
+            //   LIFT SERVO  (X + Y simultaneously, stationary only)
             // ============================================================
-
-            // Compute driverActive here so the lift block and the swerve block both use it
             boolean driverActive =
                     Math.abs(gamepad1.left_stick_x)  > DRIVE_DEADBAND ||
-                    Math.abs(gamepad1.left_stick_y)  > DRIVE_DEADBAND ||
-                    Math.abs(gamepad1.right_stick_x) > DRIVE_DEADBAND;
+                            Math.abs(gamepad1.left_stick_y)  > DRIVE_DEADBAND ||
+                            Math.abs(gamepad1.right_stick_x) > DRIVE_DEADBAND;
+
             boolean xButtonCurrentlyPressed = gamepad1.x;
             boolean yButtonCurrentlyPressed = gamepad1.y;
             boolean xPressed = xButtonCurrentlyPressed && !xButtonPreviouslyPressed;
             boolean yPressed = yButtonCurrentlyPressed && !yButtonPreviouslyPressed;
 
-            // Trigger on either X or Y edge, but only if both are held at that moment
             if ((xPressed && yButtonCurrentlyPressed) || (yPressed && xButtonCurrentlyPressed)) {
-                boolean robotStationary = !driverActive;
-                if (robotStationary) {
+                if (!driverActive) {
                     liftEngaged = !liftEngaged;
                     lift.setPosition(liftEngaged ? LIFT_ENGAGED_POSITION : LIFT_START_POSITION);
                 } else {
-                    // Robot is moving — rumble to warn driver
                     gamepad1.rumble(0.5, 0.5, 200);
                 }
             }
@@ -248,25 +310,25 @@ public class AndromedaDrive extends LinearOpMode {
             yButtonPreviouslyPressed = yButtonCurrentlyPressed;
 
             // ============================================================
-            //   CALIBRATION MODE TOGGLE  (R3)
+            //   TURRET  (Gamepad 2 left stick X — both servos in sync)
+            // ============================================================
+            double turretStick = gamepad2.left_stick_x;
+            if (Math.abs(turretStick) > TURRET_DEADBAND) {
+                turretPosition += turretStick * TURRET_SPEED;
+                turretPosition  = Math.max(0.0, Math.min(1.0, turretPosition));
+                leftTurret.setPosition(turretPosition);
+                rightTurret.setPosition(turretPosition);
+            }
+
+            // ============================================================
+            //   CALIBRATION MODE TOGGLE  (R3) — reserved
             // ============================================================
             boolean rightStickButtonCurrentlyPressed = gamepad1.right_stick_button;
-            if (rightStickButtonCurrentlyPressed && !rightStickButtonPreviouslyPressed) {
-                // reserved — calibration is a standalone OpMode
-            }
             rightStickButtonPreviouslyPressed = rightStickButtonCurrentlyPressed;
 
-            // --- Speed Limiter ---
+            // --- Speed Limiter (slow mode only when PTO not engaged) ---
             double speedMultiplier = MAX_SPEED_GLOBAL;
-            if (gamepad1.right_bumper) speedMultiplier = MAX_SPEED_SLOW_MODE;
-
-            // --- Field-Centric Reset (dpad_up) ---
-            boolean dpadUpNow = gamepad1.dpad_up;
-            if (dpadUpNow && !dpadUpPrev) {
-                imu.resetYaw();
-                headingOffset = 0.0;
-            }
-            dpadUpPrev = dpadUpNow;
+            if (rbHeld && !ptoEngaged) speedMultiplier = MAX_SPEED_SLOW_MODE;
 
             // ============================================================
             //   FIELD-CENTRIC SWERVE DRIVE
@@ -275,10 +337,10 @@ public class AndromedaDrive extends LinearOpMode {
             double fieldX =  gamepad1.left_stick_x * speedMultiplier;
             double rot    =  gamepad1.right_stick_x * speedMultiplier;
 
-            double rawHeading  = imu.getRobotYawPitchRollAngles().getYaw(AngleUnit.RADIANS);
-            double rawPitch    = imu.getRobotYawPitchRollAngles().getPitch(AngleUnit.RADIANS);
-            double rawRoll     = imu.getRobotYawPitchRollAngles().getRoll(AngleUnit.RADIANS);
-            double botHeading  = wrapAngle(rawHeading - headingOffset);
+            double rawHeading = imu.getRobotYawPitchRollAngles().getYaw(AngleUnit.RADIANS);
+            double rawPitch   = imu.getRobotYawPitchRollAngles().getPitch(AngleUnit.RADIANS);
+            double rawRoll    = imu.getRobotYawPitchRollAngles().getRoll(AngleUnit.RADIANS);
+            double botHeading = wrapAngle(rawHeading - headingOffset);
 
             double robotX = fieldX * Math.cos(-botHeading) - fieldY * Math.sin(-botHeading);
             double robotY = fieldX * Math.sin(-botHeading) + fieldY * Math.cos(-botHeading);
@@ -298,7 +360,7 @@ public class AndromedaDrive extends LinearOpMode {
 
             double maxSpeed = Math.max(
                     Math.max(speedFrontLeft, speedFrontRight),
-                    Math.max(speedBackLeft, speedBackRight)
+                    Math.max(speedBackLeft,  speedBackRight)
             );
             if (maxSpeed > 1.0) {
                 speedFrontLeft  /= maxSpeed;
@@ -307,8 +369,6 @@ public class AndromedaDrive extends LinearOpMode {
                 speedBackRight  /= maxSpeed;
             }
 
-            // driverActive already computed above from raw stick values
-
             if (driverActive) {
                 targetAngleFL = Math.atan2(B, D);
                 targetAngleFR = Math.atan2(B, C);
@@ -316,19 +376,20 @@ public class AndromedaDrive extends LinearOpMode {
                 targetAngleBR = Math.atan2(A, C);
                 framesSinceLastMoved = 0;
             } else {
-                speedFrontLeft = 0; speedFrontRight = 0; speedBackLeft = 0; speedBackRight = 0;
-                framesSinceLastMoved += 1;
+                speedFrontLeft = 0; speedFrontRight = 0;
+                speedBackLeft  = 0; speedBackRight  = 0;
+                framesSinceLastMoved++;
             }
 
             boolean lockWheels = gamepad1.left_stick_button || framesSinceLastMoved >= FRAMES_TO_PLANT_WHEELS;
             if (lockWheels) {
                 targetAngleFL = -Math.PI / 4; targetAngleFR =  Math.PI / 4;
                 targetAngleBL =  Math.PI / 4; targetAngleBR = -Math.PI / 4;
-                speedFrontLeft = 0; speedFrontRight = 0; speedBackLeft = 0; speedBackRight = 0;
+                speedFrontLeft = 0; speedFrontRight = 0;
+                speedBackLeft  = 0; speedBackRight  = 0;
             }
 
-            // 12 V normalisation factor — computed once per loop for efficiency
-            double voltage = voltageSensor.getVoltage();
+            double voltage       = voltageSensor.getVoltage();
             double voltageFactor = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
 
             ModuleDebug fl = runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  speedFrontLeft,  targetAngleFL, "FL", voltageFactor);
@@ -340,27 +401,29 @@ public class AndromedaDrive extends LinearOpMode {
             //   TELEMETRY
             // ============================================================
             telemetry.addLine("=== ANDROMEDA MECHANISMS ===");
-            telemetry.addData("Intake",      intakeRunning ? "RUNNING" : (intakeRampingDown ? "RAMPING DOWN" : "OFF"));
-            telemetry.addData("IntakePwr",   "%.2f", intakePower);
-            telemetry.addData("Flywheel",    flywheelRunning ? "RUNNING" : (flywheelRampingDown ? "RAMPING DOWN" : "OFF"));
-            telemetry.addData("Blocker",     blocker.getPosition() == BLOCKER_LAUNCH_POSITION ? "LAUNCH" : "BLOCKED");
-            telemetry.addData("Lift",        liftEngaged ? "ENGAGED" : "START");
+            telemetry.addData("PTO",          ptoEngaged ? "ENGAGED (0.5)" : "DISENGAGED (0.7)");
+            telemetry.addData("Intake",       intakeRunning ? "RUNNING" : (intakeRampingDown ? "RAMPING DOWN" : "OFF"));
+            telemetry.addData("IntakeSpeed",  "%.0f%%  (pwr %.2f)", intakeSpeedTarget * 100, intakePower);
+            telemetry.addData("Flywheel",     flywheelRunning ? "RUNNING" : (flywheelRampingDown ? "RAMPING DOWN" : "OFF"));
+            telemetry.addData("Blocker",      blocker.getPosition() == BLOCKER_LAUNCH_POSITION ? "LAUNCH" : "BLOCKED");
+            telemetry.addData("Lift",         liftEngaged ? "ENGAGED" : "START");
+            telemetry.addData("TurretPos",    "%.3f", turretPosition);
 
             telemetry.addLine("=== FIELD CENTRIC INPUTS ===");
-            telemetry.addData("fieldX/fieldY/rot", "%.2f  %.2f  %.2f", fieldX, fieldY, rot);
-            telemetry.addData("rawHeading(rad)", "%.3f", rawHeading);
-            telemetry.addData("botHeading(rad)", "%.3f", botHeading);
-            telemetry.addData("rawPitch(rad)",   "%.3f", rawPitch);
-            telemetry.addData("rawRoll(rad)",    "%.3f", rawRoll);
-            telemetry.addData("robotX/robotY",   "%.2f  %.2f", robotX, robotY);
+            telemetry.addData("fieldX/fieldY/rot",   "%.2f  %.2f  %.2f", fieldX, fieldY, rot);
+            telemetry.addData("rawHeading(rad)",     "%.3f", rawHeading);
+            telemetry.addData("botHeading(rad)",     "%.3f", botHeading);
+            telemetry.addData("rawPitch(rad)",       "%.3f", rawPitch);
+            telemetry.addData("rawRoll(rad)",        "%.3f", rawRoll);
+            telemetry.addData("robotX/robotY",       "%.2f  %.2f", robotX, robotY);
 
             telemetry.addLine("=== KINEMATICS ===");
-            telemetry.addData("A B C D",           "%.2f  %.2f  %.2f  %.2f", A, B, C, D);
-            telemetry.addData("spd FL FR BL BR",   "%.2f  %.2f  %.2f  %.2f", speedFrontLeft, speedFrontRight, speedBackLeft, speedBackRight);
-            telemetry.addData("maxSpeed(norm)",    "%.2f", maxSpeed);
-            telemetry.addData("driverActive",      driverActive);
-            telemetry.addData("framesSinceMoved",  framesSinceLastMoved);
-            telemetry.addData("lockWheels",        lockWheels);
+            telemetry.addData("A B C D",             "%.2f  %.2f  %.2f  %.2f", A, B, C, D);
+            telemetry.addData("spd FL FR BL BR",     "%.2f  %.2f  %.2f  %.2f", speedFrontLeft, speedFrontRight, speedBackLeft, speedBackRight);
+            telemetry.addData("maxSpeed(norm)",      "%.2f", maxSpeed);
+            telemetry.addData("driverActive",        driverActive);
+            telemetry.addData("framesSinceMoved",    framesSinceLastMoved);
+            telemetry.addData("lockWheels",          lockWheels);
 
             telemetry.addLine("=== MODULES (raw/adj/target/delta/servo/speed) ===");
             telemetry.addData("FL", fl.toShortString());
@@ -369,7 +432,7 @@ public class AndromedaDrive extends LinearOpMode {
             telemetry.addData("BR", br.toShortString());
 
             telemetry.addLine("=== SYSTEM ===");
-            telemetry.addData("Voltage",       "%.2f V (factor %.3f)", voltage, voltageFactor);
+            telemetry.addData("Voltage", "%.2f V (factor %.3f)", voltage, voltageFactor);
             telemetry.update();
         }
     }
@@ -378,25 +441,21 @@ public class AndromedaDrive extends LinearOpMode {
     //   HARDWARE INIT
     // ============================================================
     private void initializeHardware() {
-        // Swerve drive motors
         frontLeftDrive  = hardwareMap.get(DcMotor.class, "frontLeftDrive");
         frontRightDrive = hardwareMap.get(DcMotor.class, "frontRightDrive");
         backLeftDrive   = hardwareMap.get(DcMotor.class, "backLeftDrive");
         backRightDrive  = hardwareMap.get(DcMotor.class, "backRightDrive");
 
-        // Swerve steer servos
         frontLeftSteer  = hardwareMap.get(CRServo.class, "frontLeftSteer");
         frontRightSteer = hardwareMap.get(CRServo.class, "frontRightSteer");
         backLeftSteer   = hardwareMap.get(CRServo.class, "backLeftSteer");
         backRightSteer  = hardwareMap.get(CRServo.class, "backRightSteer");
 
-        // Steer encoders
         frontLeftEncoder  = hardwareMap.get(AnalogInput.class, "frontLeftEncoder");
         frontRightEncoder = hardwareMap.get(AnalogInput.class, "frontRightEncoder");
         backLeftEncoder   = hardwareMap.get(AnalogInput.class, "backLeftEncoder");
         backRightEncoder  = hardwareMap.get(AnalogInput.class, "backRightEncoder");
 
-        // Mechanism motors — float on zero power so they coast to a stop
         topIntake    = hardwareMap.get(DcMotor.class, "topIntake");
         bottomIntake = hardwareMap.get(DcMotor.class, "bottomIntake");
         leftFly      = hardwareMap.get(DcMotor.class, "leftFly");
@@ -412,13 +471,13 @@ public class AndromedaDrive extends LinearOpMode {
         leftFly.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         rightFly.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
-        // Blocker servo
         blocker = hardwareMap.get(Servo.class, "blocker");
+        lift    = hardwareMap.get(Servo.class, "lift");
+        pto     = hardwareMap.get(Servo.class, "pto");
 
-        // Lift servo
-        lift = hardwareMap.get(Servo.class, "lift");
+        leftTurret  = hardwareMap.get(Servo.class, "leftTurret");
+        rightTurret = hardwareMap.get(Servo.class, "rightTurret");
 
-        // Sensors
         voltageSensor = hardwareMap.voltageSensor.iterator().next();
         imu = hardwareMap.get(IMU.class, "imu");
 
@@ -431,11 +490,10 @@ public class AndromedaDrive extends LinearOpMode {
         imu.initialize(parameters);
         imu.resetYaw();
 
-        // Drive motor directions
         frontLeftDrive.setDirection(DcMotor.Direction.REVERSE);
         backLeftDrive.setDirection(DcMotor.Direction.REVERSE);
-        frontRightDrive.setDirection(DcMotor.Direction.REVERSE);
-        backRightDrive.setDirection(DcMotor.Direction.REVERSE);
+        frontRightDrive.setDirection(DcMotor.Direction.FORWARD);
+        backRightDrive.setDirection(DcMotor.Direction.FORWARD);
 
         frontLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         frontRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
@@ -484,8 +542,6 @@ public class AndromedaDrive extends LinearOpMode {
 
         double servoPower = STEER_KP * delta * -1;
 
-        // Enforce minimum power outside deadband so static friction
-        // can't stall the servo on small corrections
         if (Math.abs(servoPower) > STEER_DEADBAND) {
             if (servoPower > 0 && servoPower < STEER_MIN_POWER)  servoPower =  STEER_MIN_POWER;
             if (servoPower < 0 && servoPower > -STEER_MIN_POWER) servoPower = -STEER_MIN_POWER;
@@ -495,7 +551,6 @@ public class AndromedaDrive extends LinearOpMode {
 
         servoPower = Math.max(-1, Math.min(1, servoPower));
 
-        // Normalise drive power to 12 V: scale requested power by (12 / batteryVoltage)
         double normalisedSpeed = speed * voltageFactor;
         normalisedSpeed = Math.max(-1, Math.min(1, normalisedSpeed));
 

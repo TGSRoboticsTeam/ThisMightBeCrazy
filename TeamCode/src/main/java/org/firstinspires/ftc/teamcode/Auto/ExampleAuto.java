@@ -54,10 +54,11 @@ public class ExampleAuto extends LinearOpMode {
            // new Waypoint(24, 0, 0),
 
             // 2. Strafe left 24 inches, raise lift on arrival
-           new Waypoint(24, 24, 0, () -> {
+           new Waypoint(24, 0, 0, () -> {
                 // lift.setTarget(800);
                 sleep(300);   // wait for lift to reach height
             }),
+
 
             //2.5
             /*new Waypoint(24,24,Math.PI),

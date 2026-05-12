@@ -69,8 +69,7 @@ public class SwerveDriveAuto {
     final double FRONT_LEFT_OFFSET  = 0.1200;
     final double FRONT_RIGHT_OFFSET = 1.3861;
     final double BACK_LEFT_OFFSET   = 1.6965;
-    final double BACK_RIGHT_OFFSET  = 4.3145;
-
+    final double BACK_RIGHT_OFFSET  = 0.8225;
     // ═════════════════════════════════════════════════════════════════════════
     //  HARDWARE
     // ═════════════════════════════════════════════════════════════════════════

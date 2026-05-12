@@ -31,7 +31,7 @@ public class justFieldSwerving extends LinearOpMode {
     final double FRONT_LEFT_OFFSET  = 0.1200;
     final double FRONT_RIGHT_OFFSET = 1.3861;
     final double BACK_LEFT_OFFSET   = 1.6965;
-    final double BACK_RIGHT_OFFSET  = 4.3145;
+    final double BACK_RIGHT_OFFSET  = 0.8225;
 
     // --- 4. TUNING PARAMETERS ---
     final double STEER_KP = 0.6;
@@ -248,8 +248,8 @@ public class justFieldSwerving extends LinearOpMode {
         // Drive motor directions (keep yours)
         frontLeftDrive.setDirection(DcMotor.Direction.REVERSE);
         backLeftDrive.setDirection(DcMotor.Direction.REVERSE);
-        frontRightDrive.setDirection(DcMotor.Direction.REVERSE);
-        backRightDrive.setDirection(DcMotor.Direction.REVERSE);
+        frontRightDrive.setDirection(DcMotor.Direction.FORWARD);
+        backRightDrive.setDirection(DcMotor.Direction.FORWARD);
 
         frontLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         frontRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
