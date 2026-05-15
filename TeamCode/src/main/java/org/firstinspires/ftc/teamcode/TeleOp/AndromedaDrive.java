@@ -57,7 +57,7 @@ public class AndromedaDrive extends LinearOpMode {
     final double LIFT_START_POSITION   = 0.0;
     final double LIFT_ENGAGED_POSITION = 1.0;
 
-    final double PTO_DISENGAGED = 0.7;
+    final double PTO_DISENGAGED = 0.8;
     final double PTO_ENGAGED    = 0.5;
     // ============================================================
 
