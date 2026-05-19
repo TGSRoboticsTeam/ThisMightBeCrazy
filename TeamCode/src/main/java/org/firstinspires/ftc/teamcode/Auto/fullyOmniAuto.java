@@ -578,7 +578,7 @@ public class fullyOmniAuto extends LinearOpMode {
             double B =  rot * (WHEELBASE / R);
             double C = -rot * (TRACK_WIDTH / R);
             double D =  rot * (TRACK_WIDTH / R);
-
+//
             double speedFL = Math.hypot(B, D);
             double speedFR = Math.hypot(B, C);
             double speedBL = Math.hypot(A, D);
