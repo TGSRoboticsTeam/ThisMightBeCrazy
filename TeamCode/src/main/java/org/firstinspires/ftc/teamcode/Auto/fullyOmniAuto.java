@@ -12,22 +12,28 @@ import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
 /**
- * just2DAuto — unified 2D auto for the swerve drive.
+ * fullyOmniAuto — adds diagonal driving to just2DAuto's capabilities.
  *
- * Three reusable methods:
- *   driveX(inches)        - forward/back driving (wheels at 0°, L/R heading correction)
- *   driveY(inches)        - strafe driving       (wheels at 90°, F/B heading correction)
- *   correctHeading()      - active rotate back to auto-start heading (in-place spin)
+ * Five reusable methods:
+ *   driveX(inches)           - forward/back (wheels at 0°, L/R heading correction)
+ *   driveY(inches)           - strafe       (wheels at 90°, F/B heading correction)
+ *   driveXY(dx, dy)          - RELATIVE diagonal: travel dx,dy from current position
+ *   driveToXY(x, y)          - ABSOLUTE diagonal: travel to field position x,y
+ *   correctHeading()         - active rotate back to auto-start heading
  *
- * All methods lock the wheels to the correct angle before applying drive power
- * and wait for them to be aligned within STEER_ALIGN_TOLERANCE_RAD first.
+ * For diagonal moves:
+ *   targetAngle  = atan2(dy, dx)        (all wheels lock here)
+ *   totalDist    = hypot(dx, dy)        (drive distance along that direction)
+ *   progress     = (Δx)cos(θ) + (Δy)sin(θ)   (projection of travel onto path)
+ *   No in-drive heading correction — uses correctHeading() between moves instead.
  *
  * Sign conventions:
- *   driveX(+) = +X direction (Pinpoint X increases)
- *   driveY(+) = +Y direction after Y_DIRECTION_SIGN correction
+ *   driveX(+) = forward (Pinpoint X increases)
+ *   driveY(+) = LEFT    (assumed) — flip Y_DIRECTION_SIGN if it strafes right instead
+ *   driveXY(dx, dy) uses the same Pinpoint axes
  */
-@Autonomous(name = "just2DAuto", group = "Swerve")
-public class just2DAuto extends LinearOpMode {
+@Autonomous(name = "fullyOmniAuto", group = "Swerve")
+public class fullyOmniAuto extends LinearOpMode {
 
     // ============================================================
     // HARDWARE
@@ -61,7 +67,6 @@ public class just2DAuto extends LinearOpMode {
 
     // ============================================================
     // PINPOINT CONFIGURATION
-    // Confirmed: X pod FORWARD, Y pod REVERSED.
     // ============================================================
     final GoBildaPinpointDriver.EncoderDirection X_POD_DIRECTION =
             GoBildaPinpointDriver.EncoderDirection.FORWARD;
@@ -71,13 +76,12 @@ public class just2DAuto extends LinearOpMode {
     final double X_POD_OFFSET_MM =  41.9999922;   // X pod, left of center
     final double Y_POD_OFFSET_MM = -148.3535768;  // Y pod, behind center
 
-    // Y_DIRECTION_SIGN: extra flip if positive driveY moves wrong physical direction.
+    // Y_DIRECTION_SIGN: if positive Y commands drive the wrong physical direction,
+    // flip this to -1.0. Currently assumed +Y = LEFT.
     final double Y_DIRECTION_SIGN = +1.0;
 
     // ============================================================
-    // DISTANCE PID — shared between driveX and driveY.
-    // Tuned values from justAuto. If X and Y need different gains later,
-    // duplicate these into DRIVE_X_KP / DRIVE_Y_KP etc.
+    // DISTANCE PID — shared across all drive methods.
     // ============================================================
     final double DRIVE_KP = 0.10;
     final double DRIVE_KI = 0.0;
@@ -85,46 +89,43 @@ public class just2DAuto extends LinearOpMode {
     final double DRIVE_KS = 0.05;
     final double DRIVE_TOLERANCE_IN = 0.5;
     final double DRIVE_MAX_POWER = 0.75;
-    final double DRIVE_MIN_POWER = 0.20; // floor on combined output (raised from 0.15)
-    final double DRIVE_P_MIN_POWER = 0.20; // floor on P term alone — guarantees P contribution overcomes stiction
+    final double DRIVE_MIN_POWER = 0.20;
+    final double DRIVE_P_MIN_POWER = 0.20;
     final long   DRIVE_TIMEOUT_MS = 6000;
     final int    DRIVE_SETTLE_FRAMES = 5;
     final double DRIVE_INTEGRAL_RANGE_IN = 4.0;
     final double DRIVE_OVERSHOOT_BRAKE_POWER = 0.25;
 
     // ============================================================
-    // IN-DRIVE HEADING CORRECTION (small left/right or front/back asymmetry
-    // applied DURING driveX or driveY to fight drift)
+    // IN-DRIVE HEADING CORRECTION (only used by driveX and driveY)
     // ============================================================
-    final double HEADING_KP = 0.025;             // power difference per degree of heading error
-    final double HEADING_MAX_CORRECTION = 0.3;   // cap on asymmetry
+    final double HEADING_KP = 0.025;
+    final double HEADING_MAX_CORRECTION = 0.3;
 
     // ============================================================
     // STANDALONE HEADING CORRECTION (correctHeading() method)
-    // Used between moves to actively rotate back to the auto-start heading.
-    // Separate PID knobs so it can be tuned independently of in-drive correction.
     // ============================================================
-    final double HEADING_CORRECT_KP = 0.040;        // rotation power per degree of error (raised from 0.020)
-    final double HEADING_CORRECT_KD = 0.002;        // damping
-    final double HEADING_CORRECT_KS = 0.05;         // static feedforward to overcome stiction
+    final double HEADING_CORRECT_KP = 0.040;
+    final double HEADING_CORRECT_KD = 0.002;
+    final double HEADING_CORRECT_KS = 0.05;
     final double HEADING_CORRECT_TOLERANCE_DEG = 0.75;
-    final double HEADING_CORRECT_MAX_POWER = 0.5;   // cap on rotation power (raised from 0.4)
-    final double HEADING_CORRECT_MIN_POWER = 0.22;  // floor on combined output (raised from 0.10)
-    final double HEADING_CORRECT_P_MIN_POWER = 0.22; // floor on P term alone
+    final double HEADING_CORRECT_MAX_POWER = 0.5;
+    final double HEADING_CORRECT_MIN_POWER = 0.22;
+    final double HEADING_CORRECT_P_MIN_POWER = 0.22;
     final long   HEADING_CORRECT_TIMEOUT_MS = 2500;
     final int    HEADING_CORRECT_SETTLE_FRAMES = 5;
 
     // ============================================================
-    // WHEEL ALIGNMENT BEFORE DRIVING
+    // WHEEL ALIGNMENT
     // ============================================================
     final double STEER_ALIGN_TOLERANCE_RAD = Math.toRadians(1.75);
     final long   STEER_ALIGN_TIMEOUT_MS = 1500;
 
     // ============================================================
-    // WHEEL TARGET ANGLES
+    // WHEEL TARGET ANGLES (for driveX and driveY)
     // ============================================================
-    final double WHEELS_FORWARD_RAD = 0.0;       // driveX
-    final double WHEELS_SIDEWAYS_RAD = Math.PI / 2; // driveY (+90 degrees)
+    final double WHEELS_FORWARD_RAD = 0.0;
+    final double WHEELS_SIDEWAYS_RAD = Math.PI / 2;
 
     // ============================================================
     // UNITS
@@ -138,7 +139,7 @@ public class just2DAuto extends LinearOpMode {
     public void runOpMode() {
         initializeHardware();
 
-        telemetry.addLine("Initialized. Waiting for start.");
+        telemetry.addLine("fullyOmniAuto initialized. Waiting for start.");
         telemetry.addData("Pinpoint status", odo.getDeviceStatus());
         telemetry.addData("Battery", "%.2f V", voltageSensor.getVoltage());
         telemetry.update();
@@ -146,29 +147,40 @@ public class just2DAuto extends LinearOpMode {
         waitForStart();
         if (!opModeIsActive()) return;
 
-        // Capture the absolute heading reference for this entire auto run.
         odo.update();
         autoStartHeadingDeg = odo.getHeading(AngleUnit.DEGREES);
 
         // ====================================================
-        // EDIT THIS SEQUENCE PER RUN
-        // driveX(+) = forward,  driveX(-) = backward
-        // driveY(+) = strafe in +Y,  driveY(-) = strafe in -Y
-        // correctHeading() = rotate back to auto-start heading
+        // HOURGLASS / BOWTIE SAMPLE SEQUENCE
+        // Assumes +Y = LEFT. Path returns to origin if signs are right.
+        //
+        //   (24,24) <-- forward 24 --- (0,24)
+        //       \                       ^
+        //        \  diagonal           / diagonal
+        //         \  back-right       /  back-left
+        //          v                 /
+        //   (0, 0) ---- forward 24 -> (24, 0)
+        //
+        // Order: forward, diagonal back-left, forward, diagonal back-right.
         // ====================================================
-        driveX(24);
-        sleep(500);
+        driveX(24);                 // (0,0) → (24,0)
+        sleep(300);
         correctHeading();
-        sleep(500);
-        driveY(24);
-        sleep(500);
+        sleep(300);
+
+        driveXY(-24, 24);           // (24,0) → (0,24) — back-left diagonal
+        sleep(300);
         correctHeading();
-        sleep(500);
-        driveX(-24);
-        sleep(500);
+        sleep(300);
+
+        driveX(24);                 // (0,24) → (24,24)
+        sleep(300);
         correctHeading();
-        sleep(500);
-        driveY(-24);
+        sleep(300);
+
+        driveXY(-24, -24);          // (24,24) → (0,0) — back-right diagonal
+        sleep(300);
+        correctHeading();
         // ====================================================
 
         telemetry.addLine("Auto complete.");
@@ -217,8 +229,6 @@ public class just2DAuto extends LinearOpMode {
 
     // ============================================================
     // driveX — drive forward/backward.
-    // Wheels at 0°. Position feedback from Pinpoint X (inches).
-    // Heading correction via left-pair vs right-pair drive power asymmetry.
     // ============================================================
     public void driveX(double inches) {
         odo.update();
@@ -227,18 +237,11 @@ public class just2DAuto extends LinearOpMode {
 
         alignWheelsTo(WHEELS_FORWARD_RAD, "ALIGNING FORWARD");
 
-        runDistancePID(
-                inches, targetPos,
-                /* readPos        */ true,   // true = read X, false = read Y
-                WHEELS_FORWARD_RAD,
-                /* useLeftRightHeading */ true
-        );
+        runDistancePID(inches, targetPos, true, WHEELS_FORWARD_RAD, true);
     }
 
     // ============================================================
     // driveY — strafe.
-    // Wheels at +90°. Position feedback from Pinpoint Y (inches).
-    // Heading correction via front-pair vs back-pair drive power asymmetry.
     // ============================================================
     public void driveY(double inches) {
         odo.update();
@@ -247,21 +250,169 @@ public class just2DAuto extends LinearOpMode {
 
         alignWheelsTo(WHEELS_SIDEWAYS_RAD, "ALIGNING SIDEWAYS");
 
-        runDistancePID(
-                inches, targetPos,
-                /* readPos        */ false,  // read Y
-                WHEELS_SIDEWAYS_RAD,
-                /* useLeftRightHeading */ false
-        );
+        runDistancePID(inches, targetPos, false, WHEELS_SIDEWAYS_RAD, false);
     }
 
     // ============================================================
-    // Shared distance PID loop. Used by both driveX and driveY.
-    //   inches:       requested distance (for direction sign / overshoot detection)
-    //   targetPos:    absolute target position (inches)
-    //   readX:        true = read Pinpoint X, false = read Pinpoint Y
-    //   wheelAngle:   target wheel angle (0 or +π/2)
-    //   useLeftRight: true = L/R asymmetry, false = F/B asymmetry
+    // driveXY — RELATIVE diagonal drive.
+    // Travel a (dx, dy) displacement from current position.
+    //
+    // dx/dy are interpreted in the Pinpoint frame:
+    //   dx > 0 = forward,  dx < 0 = back
+    //   dy > 0 = left,     dy < 0 = right  (assuming +Y = LEFT)
+    // ============================================================
+    public void driveXY(double dxInches, double dyInches) {
+        odo.update();
+        double startX = readPosXInches();
+        double startY = readPosYInches();
+        double targetX = startX + dxInches;
+        double targetY = startY + dyInches;
+
+        runDiagonalPID(dxInches, dyInches, startX, startY, targetX, targetY);
+    }
+
+    // ============================================================
+    // driveToXY — ABSOLUTE diagonal drive.
+    // Travel to absolute field position (targetX, targetY) in inches.
+    // Field origin is wherever Pinpoint was last reset (start of auto).
+    // ============================================================
+    public void driveToXY(double targetX, double targetY) {
+        odo.update();
+        double startX = readPosXInches();
+        double startY = readPosYInches();
+        double dx = targetX - startX;
+        double dy = targetY - startY;
+
+        runDiagonalPID(dx, dy, startX, startY, targetX, targetY);
+    }
+
+    // ============================================================
+    // Shared diagonal PID. Used by driveXY and driveToXY.
+    //   dx, dy:           displacement from start (inches)
+    //   startX, startY:   starting position (inches)
+    //   targetX, targetY: target position (inches)
+    // ============================================================
+    private void runDiagonalPID(double dx, double dy,
+                                double startX, double startY,
+                                double targetX, double targetY) {
+        double totalDistance = Math.hypot(dx, dy);
+
+        // No-op for zero-distance commands
+        if (totalDistance < DRIVE_TOLERANCE_IN) {
+            return;
+        }
+
+        // Travel angle in the Pinpoint frame: atan2(dy, dx)
+        // This is also the wheel target angle (all four wheels point this direction).
+        double travelAngle = Math.atan2(dy, dx);
+        double cosA = Math.cos(travelAngle);
+        double sinA = Math.sin(travelAngle);
+
+        // Align all four wheels to the travel angle
+        alignWheelsTo(travelAngle, String.format("ALIGNING %.1f deg", Math.toDegrees(travelAngle)));
+
+        // PID state — we control progress (scalar distance along the path)
+        double prevError = totalDistance;
+        double integral = 0.0;
+        long startTime = System.currentTimeMillis();
+        long lastTime = startTime;
+        int settleCounter = 0;
+
+        boolean hasOvershot = false;
+
+        while (opModeIsActive()) {
+            odo.update();
+
+            long now = System.currentTimeMillis();
+            double dt = (now - lastTime) / 1000.0;
+            if (dt <= 0) dt = 0.001;
+            lastTime = now;
+
+            // Progress = projection of current displacement onto the travel direction
+            double currentX = readPosXInches();
+            double currentY = readPosYInches();
+            double traveled = (currentX - startX) * cosA + (currentY - startY) * sinA;
+            double error = totalDistance - traveled;
+
+            // Settle / exit
+            if (Math.abs(error) < DRIVE_TOLERANCE_IN) {
+                settleCounter++;
+                if (settleCounter >= DRIVE_SETTLE_FRAMES) break;
+            } else {
+                settleCounter = 0;
+            }
+            if (now - startTime > DRIVE_TIMEOUT_MS) break;
+
+            // PID with anti-windup
+            if (Math.abs(error) < DRIVE_INTEGRAL_RANGE_IN) {
+                integral += error * dt;
+            } else {
+                integral = 0;
+            }
+            double derivative = (error - prevError) / dt;
+
+            // P term with floor
+            double pTerm = DRIVE_KP * error;
+            if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
+                pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
+            }
+
+            double basePower = pTerm
+                    + DRIVE_KI * integral
+                    + DRIVE_KD * derivative
+                    + DRIVE_KS * Math.signum(error);
+
+            basePower = clamp(basePower, -DRIVE_MAX_POWER, DRIVE_MAX_POWER);
+
+            if (Math.abs(basePower) < DRIVE_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
+                basePower = DRIVE_MIN_POWER * Math.signum(error);
+            }
+
+            // Overshoot brake: progress went past total distance (or behind for retreats,
+            // but for diagonal moves we always go forward along the travel angle)
+            if (error < -DRIVE_TOLERANCE_IN) {
+                hasOvershot = true;
+            }
+            if (hasOvershot && Math.abs(error) > DRIVE_TOLERANCE_IN) {
+                basePower = DRIVE_OVERSHOOT_BRAKE_POWER * Math.signum(error);
+            }
+
+            // No in-drive heading correction during diagonal moves —
+            // correctHeading() between moves handles drift.
+            // All four wheels get the same power and angle.
+            setDrivePowersAll(basePower, travelAngle);
+
+            // Heading is monitored for telemetry only (not corrected here)
+            double currentHeading = readHeadingDegrees();
+            double headingError = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
+
+            telemetry.addData("Phase", "DIAGONAL");
+            telemetry.addData("Travel angle (deg)", "%.2f", Math.toDegrees(travelAngle));
+            telemetry.addData("Total dist (in)",    "%.2f", totalDistance);
+            telemetry.addData("Traveled (in)",      "%.2f", traveled);
+            telemetry.addData("Error (in)",         "%.2f", error);
+            telemetry.addData("Current (x,y)",      "(%.2f, %.2f)", currentX, currentY);
+            telemetry.addData("Target  (x,y)",      "(%.2f, %.2f)", targetX, targetY);
+            telemetry.addData("Base Power",         "%.3f", basePower);
+            telemetry.addData("Overshot?",          hasOvershot);
+            telemetry.addData("Heading drift (deg)","%.2f", headingError);
+            telemetry.addData("Elapsed (ms)",       now - startTime);
+            telemetry.update();
+
+            prevError = error;
+        }
+
+        // Stop
+        long stopUntil = System.currentTimeMillis() + 100;
+        while (opModeIsActive() && System.currentTimeMillis() < stopUntil) {
+            odo.update();
+            setDrivePowersAll(0, travelAngle);
+        }
+        setDrivePowersAll(0, travelAngle);
+    }
+
+    // ============================================================
+    // Shared linear distance PID. Used by driveX and driveY.
     // ============================================================
     private void runDistancePID(double inches, double targetPos, boolean readX,
                                 double wheelAngle, boolean useLeftRight) {
@@ -285,20 +436,14 @@ public class just2DAuto extends LinearOpMode {
             double currentPos = readX ? readPosXInches() : readPosYInches();
             double error = targetPos - currentPos;
 
-            // Settle / exit checks
             if (Math.abs(error) < DRIVE_TOLERANCE_IN) {
                 settleCounter++;
-                if (settleCounter >= DRIVE_SETTLE_FRAMES) {
-                    break;
-                }
+                if (settleCounter >= DRIVE_SETTLE_FRAMES) break;
             } else {
                 settleCounter = 0;
             }
-            if (now - startTime > DRIVE_TIMEOUT_MS) {
-                break;
-            }
+            if (now - startTime > DRIVE_TIMEOUT_MS) break;
 
-            // PID with anti-windup
             if (Math.abs(error) < DRIVE_INTEGRAL_RANGE_IN) {
                 integral += error * dt;
             } else {
@@ -306,8 +451,6 @@ public class just2DAuto extends LinearOpMode {
             }
             double derivative = (error - prevError) / dt;
 
-            // P term with its own floor: guarantees the proportional contribution
-            // is at least DRIVE_P_MIN_POWER in magnitude when there is real error.
             double pTerm = DRIVE_KP * error;
             if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
                 pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
@@ -324,7 +467,6 @@ public class just2DAuto extends LinearOpMode {
                 basePower = DRIVE_MIN_POWER * Math.signum(error);
             }
 
-            // Overshoot brake
             if (initialErrorSign != 0 && Math.signum(error) != initialErrorSign
                     && Math.abs(error) > DRIVE_TOLERANCE_IN) {
                 hasOvershot = true;
@@ -333,16 +475,14 @@ public class just2DAuto extends LinearOpMode {
                 basePower = DRIVE_OVERSHOOT_BRAKE_POWER * Math.signum(error);
             }
 
-            // Heading correction asymmetry
             double currentHeading = readHeadingDegrees();
             double headingError = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
             double correction = clamp(HEADING_KP * headingError,
                     -HEADING_MAX_CORRECTION,
                     HEADING_MAX_CORRECTION);
 
-            // Apply asymmetry in the appropriate pair grouping
-            double powerA = clamp(basePower - correction, -1.0, 1.0); // left pair OR front pair
-            double powerB = clamp(basePower + correction, -1.0, 1.0); // right pair OR back pair
+            double powerA = clamp(basePower - correction, -1.0, 1.0);
+            double powerB = clamp(basePower + correction, -1.0, 1.0);
 
             if (useLeftRight) {
                 setDrivePowersLeftRight(powerA, powerB, wheelAngle);
@@ -350,7 +490,6 @@ public class just2DAuto extends LinearOpMode {
                 setDrivePowersFrontBack(powerA, powerB, wheelAngle);
             }
 
-            // Telemetry
             telemetry.addData("Phase", readX ? "DRIVING X" : "DRIVING Y");
             telemetry.addData("Target (in)",  "%.2f", targetPos);
             telemetry.addData("Current (in)", "%.2f", currentPos);
@@ -367,7 +506,6 @@ public class just2DAuto extends LinearOpMode {
             prevError = error;
         }
 
-        // Brief stop / hold
         long stopUntil = System.currentTimeMillis() + 100;
         while (opModeIsActive() && System.currentTimeMillis() < stopUntil) {
             odo.update();
@@ -386,20 +524,13 @@ public class just2DAuto extends LinearOpMode {
 
     // ============================================================
     // correctHeading — actively rotate the robot back to autoStartHeadingDeg.
-    // Uses the same in-place rotation as justSwerve: zero translation, pure rotation.
-    // Each wheel goes to its own kinematics angle and spins to rotate the chassis.
-    // PID with its own tuning knobs (HEADING_CORRECT_*).
-    //
-    // VERIFY SIGN: if the robot rotates the WRONG way (away from target),
-    // flip the sign of `rot` below (negate it).
     // ============================================================
     public void correctHeading() {
         long startTime = System.currentTimeMillis();
         long lastTime = startTime;
-        double prevError = 0;
+        double prevError;
         int settleCounter = 0;
 
-        // Prime prevError so first derivative is zero
         odo.update();
         prevError = wrapAngleDegrees(autoStartHeadingDeg - readHeadingDegrees());
 
@@ -414,20 +545,14 @@ public class just2DAuto extends LinearOpMode {
             double currentHeading = readHeadingDegrees();
             double error = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
 
-            // Settle / exit checks
             if (Math.abs(error) < HEADING_CORRECT_TOLERANCE_DEG) {
                 settleCounter++;
-                if (settleCounter >= HEADING_CORRECT_SETTLE_FRAMES) {
-                    break;
-                }
+                if (settleCounter >= HEADING_CORRECT_SETTLE_FRAMES) break;
             } else {
                 settleCounter = 0;
             }
-            if (now - startTime > HEADING_CORRECT_TIMEOUT_MS) {
-                break;
-            }
+            if (now - startTime > HEADING_CORRECT_TIMEOUT_MS) break;
 
-            // PD + static FF with P-leg floor
             double derivative = (error - prevError) / dt;
 
             double pTerm = HEADING_CORRECT_KP * error;
@@ -440,25 +565,14 @@ public class just2DAuto extends LinearOpMode {
                     + HEADING_CORRECT_KD * derivative
                     + HEADING_CORRECT_KS * Math.signum(error);
 
-            // Clamp + floor
             rotPower = clamp(rotPower, -HEADING_CORRECT_MAX_POWER, HEADING_CORRECT_MAX_POWER);
             if (Math.abs(rotPower) < HEADING_CORRECT_MIN_POWER
                     && Math.abs(error) > HEADING_CORRECT_TOLERANCE_DEG) {
                 rotPower = HEADING_CORRECT_MIN_POWER * Math.signum(error);
             }
 
-            // Apply pure rotation using swerve kinematics.
-            // robotX = 0, robotY = 0, rot = rotPower
-            // A = -rot * (WHEELBASE / R)
-            // B = +rot * (WHEELBASE / R)
-            // C = -rot * (TRACK_WIDTH / R)
-            // D = +rot * (TRACK_WIDTH / R)
-            //
-            // SIGN: justSwerve's `rot` convention (right stick X positive = CW chassis)
-            // is OPPOSITE of Pinpoint's heading convention (CCW positive). So when
-            // error is positive (we need heading to INCREASE = rotate CCW), we need
-            // `rot` to be NEGATIVE to spin CCW. Hence the negation here.
-            // If on the bench the robot still turns the wrong way, REMOVE the negation.
+            // SIGN: justSwerve's rot convention is OPPOSITE of Pinpoint heading convention.
+            // If robot still turns wrong way on the bench, remove the negation here.
             double rot = -rotPower;
             double A = -rot * (WHEELBASE / R);
             double B =  rot * (WHEELBASE / R);
@@ -496,7 +610,6 @@ public class just2DAuto extends LinearOpMode {
             prevError = error;
         }
 
-        // Stop all drive motors after settling
         frontLeftDrive.setPower(0);
         frontRightDrive.setPower(0);
         backLeftDrive.setPower(0);
@@ -508,7 +621,7 @@ public class just2DAuto extends LinearOpMode {
     }
 
     // ============================================================
-    // Align all four modules to a target angle, telemetry-labeled.
+    // Align all four modules to a target angle.
     // ============================================================
     private void alignWheelsTo(double targetAngle, String phaseLabel) {
         long startTime = System.currentTimeMillis();
@@ -526,10 +639,6 @@ public class just2DAuto extends LinearOpMode {
             runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   0, targetAngle);
             runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  0, targetAngle);
 
-            // For wheels in normal forward, the alignment check uses delta directly.
-            // For wheels at ±π/2, runModule may flip speed sign and target by π if shorter;
-            // but for steering check we want raw mechanical alignment to targetAngle OR targetAngle+π.
-            // Either is fine since the drive direction is sign-handled inside runModule.
             boolean aligned = isAlignedTo(errFL) && isAlignedTo(errFR)
                     && isAlignedTo(errBL) && isAlignedTo(errBR);
 
@@ -554,9 +663,6 @@ public class just2DAuto extends LinearOpMode {
         backRightSteer.setPower(0);
     }
 
-    /** A module is "aligned" if either error or (error + π) wrapped is within tolerance,
-     *  because the drive motor can spin either direction so the wheel itself only needs
-     *  to be on the right axis, not the right "facing." */
     private boolean isAlignedTo(double angleError) {
         double e1 = Math.abs(angleError);
         double e2 = Math.abs(wrapAngle(angleError + Math.PI));
@@ -564,7 +670,7 @@ public class just2DAuto extends LinearOpMode {
     }
 
     // ============================================================
-    // Drive power application — left-pair vs right-pair grouping
+    // Drive power application
     // ============================================================
     private void setDrivePowersLeftRight(double leftPower, double rightPower, double wheelAngle) {
         runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  leftPower,  wheelAngle);
@@ -573,14 +679,19 @@ public class just2DAuto extends LinearOpMode {
         runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  rightPower, wheelAngle);
     }
 
-    // ============================================================
-    // Drive power application — front-pair vs back-pair grouping
-    // ============================================================
     private void setDrivePowersFrontBack(double frontPower, double backPower, double wheelAngle) {
         runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  frontPower, wheelAngle);
         runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, frontPower, wheelAngle);
         runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   backPower,  wheelAngle);
         runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  backPower,  wheelAngle);
+    }
+
+    /** All four wheels get the same power and angle (used for diagonal drives). */
+    private void setDrivePowersAll(double power, double wheelAngle) {
+        runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  power, wheelAngle);
+        runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, power, wheelAngle);
+        runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   power, wheelAngle);
+        runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  power, wheelAngle);
     }
 
     // ============================================================
@@ -600,7 +711,7 @@ public class just2DAuto extends LinearOpMode {
         }
 
         double servoPower = STEER_KP * delta;
-        servoPower *= -1; // Steering Fix: invert servo power to match physical rotation
+        servoPower *= -1;
 
         if (Math.abs(servoPower) < STEER_DEADBAND) servoPower = 0;
         servoPower = Math.max(-1, Math.min(1, servoPower));
