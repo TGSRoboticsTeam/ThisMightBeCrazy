@@ -11,7 +11,13 @@ import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
+import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+import org.firstinspires.ftc.vision.VisionPortal;
+import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
+import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
+
+import java.util.List;
 
 @TeleOp(name = "AndromedaDrive", group = "Swerve")
 public class AndromedaDrive extends LinearOpMode {
@@ -30,12 +36,6 @@ public class AndromedaDrive extends LinearOpMode {
     // --- BLOCKER SERVO ---
     private Servo blocker;
 
-    // --- LIFT SERVO ---
-    private Servo lift;
-    private boolean liftEngaged = false;
-    private boolean xButtonPreviouslyPressed = false;
-    private boolean yButtonPreviouslyPressed = false;
-
     // --- PTO SERVO ---
     private Servo pto;
     private boolean ptoEngaged = false;
@@ -48,14 +48,16 @@ public class AndromedaDrive extends LinearOpMode {
     final double TURRET_SPEED    = 0.008; // position units per loop tick
     final double TURRET_DEADBAND = 0.05;
 
+    // --- VISION (AprilTag) ---
+    private VisionPortal visionPortal;
+    private AprilTagProcessor aprilTagProcessor;
+    final int TARGET_TAG_ID = 24;
+
     // ============================================================
     //   SERVO POSITIONS  <-- SET YOUR VALUES HERE
     // ============================================================
     final double BLOCKER_BLOCKED_POSITION = 0.15;
     final double BLOCKER_LAUNCH_POSITION  = 0.45;
-
-    final double LIFT_START_POSITION   = 0.0;
-    final double LIFT_ENGAGED_POSITION = 1.0;
 
     final double PTO_DISENGAGED = 0.8;
     final double PTO_ENGAGED    = 0.5;
@@ -124,9 +126,9 @@ public class AndromedaDrive extends LinearOpMode {
     @Override
     public void runOpMode() {
         initializeHardware();
+        initializeVision();
 
         blocker.setPosition(BLOCKER_BLOCKED_POSITION);
-        lift.setPosition(LIFT_START_POSITION);
         pto.setPosition(PTO_DISENGAGED);
         leftTurret.setPosition(turretPosition);
         rightTurret.setPosition(turretPosition);
@@ -136,7 +138,6 @@ public class AndromedaDrive extends LinearOpMode {
         telemetry.addLine("G1 Left Trigger:   toggle flywheels");
         telemetry.addLine("G1 A:              blocker -> launch position");
         telemetry.addLine("G1 B:              blocker -> blocked position");
-        telemetry.addLine("G1 X + Y:          toggle lift (stationary only)");
         telemetry.addLine("G1 dpad_up:        intake 90% / reset heading");
         telemetry.addLine("G1 dpad_down:      intake 60%");
         telemetry.addLine("G1 RB + dpad_up:   PTO engage");
@@ -202,7 +203,7 @@ public class AndromedaDrive extends LinearOpMode {
             //     Both triggers held simultaneously → intakes run backward
             //     Anything else → intakes stop
             //     All other mechanisms are frozen (no trigger/button changes
-            //     processed for flywheel, blocker, lift, turret)
+            //     processed for flywheel, blocker, turret)
             //
             //   PTO INACTIVE:
             //     Normal right-trigger toggle behavior
@@ -286,30 +287,6 @@ public class AndromedaDrive extends LinearOpMode {
 
                 aButtonPreviouslyPressed = aButtonCurrentlyPressed;
                 bButtonPreviouslyPressed = bButtonCurrentlyPressed;
-
-                // --------------------------------------------------------
-                //   LIFT SERVO  (X + Y simultaneously, stationary only)
-                // --------------------------------------------------------
-                boolean driverActive =
-                        Math.abs(gamepad1.left_stick_x)  > DRIVE_DEADBAND ||
-                                Math.abs(gamepad1.left_stick_y)  > DRIVE_DEADBAND ||
-                                Math.abs(gamepad1.right_stick_x) > DRIVE_DEADBAND;
-
-                boolean xButtonCurrentlyPressed = gamepad1.x;
-                boolean yButtonCurrentlyPressed = gamepad1.y;
-                boolean xPressed = xButtonCurrentlyPressed && !xButtonPreviouslyPressed;
-                boolean yPressed = yButtonCurrentlyPressed && !yButtonPreviouslyPressed;
-
-                if ((xPressed && yButtonCurrentlyPressed) || (yPressed && xButtonCurrentlyPressed)) {
-                    if (!driverActive) {
-                        liftEngaged = !liftEngaged;
-                        lift.setPosition(liftEngaged ? LIFT_ENGAGED_POSITION : LIFT_START_POSITION);
-                    } else {
-                        gamepad1.rumble(0.5, 0.5, 200);
-                    }
-                }
-                xButtonPreviouslyPressed = xButtonCurrentlyPressed;
-                yButtonPreviouslyPressed = yButtonCurrentlyPressed;
 
                 // --------------------------------------------------------
                 //   TURRET  (Gamepad 2 left stick X — both servos in sync)
@@ -424,8 +401,34 @@ public class AndromedaDrive extends LinearOpMode {
             ModuleDebug br = runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  speedBackRight,  targetAngleBR, "BR", voltageFactor);
 
             // ============================================================
+            //   APRILTAG DETECTION (Tag ID 24)
+            // ============================================================
+            AprilTagDetection targetTag = null;
+            List<AprilTagDetection> currentDetections = aprilTagProcessor.getDetections();
+            for (AprilTagDetection detection : currentDetections) {
+                if (detection.id == TARGET_TAG_ID) {
+                    targetTag = detection;
+                    break;
+                }
+            }
+
+            // ============================================================
             //   TELEMETRY
             // ============================================================
+            telemetry.addLine("=== TURRET CAM (Tag 24) ===");
+            if (targetTag != null) {
+                telemetry.addData("Tag 24", "DETECTED");
+                if (targetTag.ftcPose != null) {
+                    telemetry.addData("Range",   "%.2f in", targetTag.ftcPose.range);
+                    telemetry.addData("Bearing", "%.1f deg", targetTag.ftcPose.bearing);
+                    telemetry.addData("Yaw",     "%.1f deg", targetTag.ftcPose.yaw);
+                } else {
+                    telemetry.addLine("ftcPose unavailable (check camera calibration)");
+                }
+            } else {
+                telemetry.addData("Tag 24", "not seen");
+            }
+
             telemetry.addLine("=== ANDROMEDA MECHANISMS ===");
             telemetry.addData("PTO",          ptoEngaged ? "ENGAGED (0.5)" : "DISENGAGED (0.7)");
             if (ptoEngaged) {
@@ -436,7 +439,6 @@ public class AndromedaDrive extends LinearOpMode {
             telemetry.addData("IntakeSpeed",  "%.0f%%  (pwr %.2f)", intakeSpeedTarget * 100, intakePower);
             telemetry.addData("Flywheel",     flywheelRunning ? "RUNNING" : (flywheelRampingDown ? "RAMPING DOWN" : "OFF"));
             telemetry.addData("Blocker",      blocker.getPosition() == BLOCKER_LAUNCH_POSITION ? "LAUNCH" : "BLOCKED");
-            telemetry.addData("Lift",         liftEngaged ? "ENGAGED" : "START");
             telemetry.addData("TurretPos",    "%.3f", turretPosition);
 
             telemetry.addLine("=== FIELD CENTRIC INPUTS ===");
@@ -465,6 +467,30 @@ public class AndromedaDrive extends LinearOpMode {
             telemetry.addData("Voltage", "%.2f V (factor %.3f)", voltage, voltageFactor);
             telemetry.update();
         }
+
+        // Clean up vision portal when opmode ends
+        if (visionPortal != null) {
+            visionPortal.close();
+        }
+    }
+
+    // ============================================================
+    //   VISION INIT
+    // ============================================================
+    private void initializeVision() {
+        aprilTagProcessor = new AprilTagProcessor.Builder()
+                .setDrawAxes(true)
+                .setDrawCubeProjection(false)
+                .setDrawTagOutline(true)
+                .setDrawTagID(true)
+                .build();
+
+        visionPortal = new VisionPortal.Builder()
+                .setCamera(hardwareMap.get(WebcamName.class, "turretCam"))
+                .addProcessor(aprilTagProcessor)
+                .setCameraResolution(new android.util.Size(640, 480))
+                .enableLiveView(true)
+                .build();
     }
 
     // ============================================================
@@ -502,7 +528,6 @@ public class AndromedaDrive extends LinearOpMode {
         rightFly.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
         blocker = hardwareMap.get(Servo.class, "blocker");
-        lift    = hardwareMap.get(Servo.class, "lift");
         pto     = hardwareMap.get(Servo.class, "pto");
 
         leftTurret  = hardwareMap.get(Servo.class, "leftTurret");
@@ -513,8 +538,8 @@ public class AndromedaDrive extends LinearOpMode {
 
         IMU.Parameters parameters = new IMU.Parameters(
                 new RevHubOrientationOnRobot(
-                        RevHubOrientationOnRobot.LogoFacingDirection.LEFT,
-                        RevHubOrientationOnRobot.UsbFacingDirection.BACKWARD
+                        RevHubOrientationOnRobot.LogoFacingDirection.BACKWARD,
+                        RevHubOrientationOnRobot.UsbFacingDirection.DOWN
                 )
         );
         imu.initialize(parameters);
