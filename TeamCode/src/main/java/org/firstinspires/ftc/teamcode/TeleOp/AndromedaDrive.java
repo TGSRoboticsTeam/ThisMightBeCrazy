@@ -91,6 +91,13 @@ public class AndromedaDrive extends LinearOpMode {
     final double INTAKE_SPEED_LOW  = 0.60; // dpad_down
     private double intakeSpeedTarget = INTAKE_SPEED_HIGH; // default
 
+    // --- 6c. FLYWHEEL MANUAL SPEED (G2 dpad up/down; RT = fine step) ---
+    final double FLYWHEEL_SPEED_STEP_COARSE = 0.05;   // per-tap, RT not held
+    final double FLYWHEEL_SPEED_STEP_FINE   = 0.01;   // per-tap, RT held
+    private double flywheelSpeedManual = 1.0;         // 0.0 .. 1.0, scaled by voltageFactor
+    private boolean g2DpadUpPrev   = false;
+    private boolean g2DpadDownPrev = false;
+
     // --- 7. TOGGLES / STATES ---
     private boolean rightStickButtonPreviouslyPressed = false;
 
@@ -137,7 +144,7 @@ public class AndromedaDrive extends LinearOpMode {
         telemetry.addLine("G1 Right Trigger:  toggle intakes");
         telemetry.addLine("G1 Left Trigger:   toggle flywheels");
         telemetry.addLine("G1 A:              blocker -> launch position");
-        telemetry.addLine("G1 B:              blocker -> blocked position");
+        telemetry.addLine("G1 B:              blocker -> blocked / turret -> 0");
         telemetry.addLine("G1 dpad_up:        intake 90% / reset heading");
         telemetry.addLine("G1 dpad_down:      intake 60%");
         telemetry.addLine("G1 RB + dpad_up:   PTO engage");
@@ -146,6 +153,9 @@ public class AndromedaDrive extends LinearOpMode {
         telemetry.addLine("G1 RB:             slow mode (when PTO inactive)");
         telemetry.addLine("G1 L3:             lock wheels (X)");
         telemetry.addLine("G2 Left Stick X:   turret");
+        telemetry.addLine("G2 dpad_up:        flywheel speed +0.05");
+        telemetry.addLine("G2 dpad_down:      flywheel speed -0.05");
+        telemetry.addLine("G2 RT + dpad:      fine step (0.01)");
         telemetry.update();
 
         waitForStart();
@@ -177,6 +187,28 @@ public class AndromedaDrive extends LinearOpMode {
 
             ptoDpadUpPreviouslyPressed   = ptoDpadUpNow;
             ptoDpadDownPreviouslyPressed = ptoDpadDownNow;
+
+            // ============================================================
+            //   FLYWHEEL MANUAL SPEED ADJUST  (G2 dpad up/down)
+            //   dpad always adjusts. Step = 0.05 normally, 0.01 with RT held.
+            //   Rising-edge: each tap nudges once, clamped to [0, 1].
+            // ============================================================
+            boolean g2RtHeld      = gamepad2.right_trigger > 0.5;
+            double  flywheelStep  = g2RtHeld ? FLYWHEEL_SPEED_STEP_FINE
+                    : FLYWHEEL_SPEED_STEP_COARSE;
+            boolean g2DpadUpNow   = gamepad2.dpad_up;
+            boolean g2DpadDownNow = gamepad2.dpad_down;
+
+            if (g2DpadUpNow && !g2DpadUpPrev) {
+                flywheelSpeedManual += flywheelStep;
+            }
+            if (g2DpadDownNow && !g2DpadDownPrev) {
+                flywheelSpeedManual -= flywheelStep;
+            }
+            flywheelSpeedManual = Math.max(0.0, Math.min(1.0, flywheelSpeedManual));
+
+            g2DpadUpPrev   = g2DpadUpNow;
+            g2DpadDownPrev = g2DpadDownNow;
 
             // ============================================================
             //   INTAKE SPEED PRESETS  (dpad_up = 90%, dpad_down = 60%)
@@ -263,7 +295,8 @@ public class AndromedaDrive extends LinearOpMode {
                 if (leftTriggerCurrentlyPressed && !leftTriggerPreviouslyPressed) {
                     if (flywheelRunning) {
                         double voltage = voltageSensor.getVoltage();
-                        flywheelRampStartPower = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
+                        double vf = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
+                        flywheelRampStartPower = flywheelSpeedManual * vf;
                         flywheelRampingDown    = true;
                         flywheelRampTimer.reset();
                         flywheelRunning = false;
@@ -276,14 +309,19 @@ public class AndromedaDrive extends LinearOpMode {
 
                 // --------------------------------------------------------
                 //   BLOCKER  (A = launch, B = blocked)
+                //   G1 B also zeroes the turret servos.
                 // --------------------------------------------------------
                 boolean aButtonCurrentlyPressed = gamepad1.a;
                 boolean bButtonCurrentlyPressed = gamepad1.b;
 
                 if (aButtonCurrentlyPressed && !aButtonPreviouslyPressed)
                     blocker.setPosition(BLOCKER_LAUNCH_POSITION);
-                if (bButtonCurrentlyPressed && !bButtonPreviouslyPressed)
+                if (bButtonCurrentlyPressed && !bButtonPreviouslyPressed) {
                     blocker.setPosition(BLOCKER_BLOCKED_POSITION);
+                    turretPosition = 0.0;
+                    leftTurret.setPosition(turretPosition);
+                    rightTurret.setPosition(turretPosition);
+                }
 
                 aButtonPreviouslyPressed = aButtonCurrentlyPressed;
                 bButtonPreviouslyPressed = bButtonCurrentlyPressed;
@@ -302,11 +340,13 @@ public class AndromedaDrive extends LinearOpMode {
 
             // ============================================================
             //   FLYWHEEL POWER (computed every loop, updated outside PTO block)
+            //   Manual speed setting (G2) is scaled by the voltage factor.
             // ============================================================
             double flywheelPower = 0.0;
             if (flywheelRunning) {
                 double voltage = voltageSensor.getVoltage();
-                flywheelPower = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
+                double vf = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
+                flywheelPower = flywheelSpeedManual * vf;
             } else if (flywheelRampingDown) {
                 double fraction = flywheelRampTimer.seconds() / MOTOR_COAST_RAMP_SECONDS;
                 if (fraction >= 1.0) {
@@ -415,6 +455,14 @@ public class AndromedaDrive extends LinearOpMode {
             // ============================================================
             //   TELEMETRY
             // ============================================================
+            telemetry.addLine("=== PRIORITY ===");
+            if (targetTag != null && targetTag.ftcPose != null) {
+                telemetry.addData("Distance", "%.2f in", targetTag.ftcPose.range);
+            } else {
+                telemetry.addData("Distance", "no tag");
+            }
+            telemetry.addData("Flywheel Speed", "%.2f", flywheelSpeedManual);
+
             telemetry.addLine("=== TURRET CAM (Tag 24) ===");
             if (targetTag != null) {
                 telemetry.addData("Tag 24", "DETECTED");
@@ -438,6 +486,7 @@ public class AndromedaDrive extends LinearOpMode {
             telemetry.addData("Intake",       intakeRunning ? "RUNNING" : (intakeRampingDown ? "RAMPING DOWN" : "OFF"));
             telemetry.addData("IntakeSpeed",  "%.0f%%  (pwr %.2f)", intakeSpeedTarget * 100, intakePower);
             telemetry.addData("Flywheel",     flywheelRunning ? "RUNNING" : (flywheelRampingDown ? "RAMPING DOWN" : "OFF"));
+            telemetry.addData("FlywheelPwr",  "%.2f (manual %.2f)", flywheelPower, flywheelSpeedManual);
             telemetry.addData("Blocker",      blocker.getPosition() == BLOCKER_LAUNCH_POSITION ? "LAUNCH" : "BLOCKED");
             telemetry.addData("TurretPos",    "%.3f", turretPosition);
 

@@ -83,15 +83,15 @@ public class fullyOmniAuto extends LinearOpMode {
     // ============================================================
     // DISTANCE PID — shared across all drive methods.
     // ============================================================
-    final double DRIVE_KP = 0.10;
+    final double DRIVE_KP = 0.15;
     final double DRIVE_KI = 0.0;
-    final double DRIVE_KD = 0.05;
+    final double DRIVE_KD = 0.03;
     final double DRIVE_KS = 0.05;
     final double DRIVE_TOLERANCE_IN = 0.5;
     final double DRIVE_MAX_POWER = 0.75;
     final double DRIVE_MIN_POWER = 0.20;
     final double DRIVE_P_MIN_POWER = 0.20;
-    final long   DRIVE_TIMEOUT_MS = 6000;
+    final long   DRIVE_TIMEOUT_MS = 1500;
     final int    DRIVE_SETTLE_FRAMES = 5;
     final double DRIVE_INTEGRAL_RANGE_IN = 4.0;
     final double DRIVE_OVERSHOOT_BRAKE_POWER = 0.25;
@@ -108,11 +108,11 @@ public class fullyOmniAuto extends LinearOpMode {
     final double HEADING_CORRECT_KP = 0.040;
     final double HEADING_CORRECT_KD = 0.002;
     final double HEADING_CORRECT_KS = 0.05;
-    final double HEADING_CORRECT_TOLERANCE_DEG = 0.75;
+    final double HEADING_CORRECT_TOLERANCE_DEG = 2;
     final double HEADING_CORRECT_MAX_POWER = 0.5;
     final double HEADING_CORRECT_MIN_POWER = 0.22;
     final double HEADING_CORRECT_P_MIN_POWER = 0.22;
-    final long   HEADING_CORRECT_TIMEOUT_MS = 2500;
+    final long   HEADING_CORRECT_TIMEOUT_MS = 750;
     final int    HEADING_CORRECT_SETTLE_FRAMES = 5;
 
     // ============================================================
@@ -578,7 +578,7 @@ public class fullyOmniAuto extends LinearOpMode {
             double B =  rot * (WHEELBASE / R);
             double C = -rot * (TRACK_WIDTH / R);
             double D =  rot * (TRACK_WIDTH / R);
-//
+
             double speedFL = Math.hypot(B, D);
             double speedFR = Math.hypot(B, C);
             double speedBL = Math.hypot(A, D);
