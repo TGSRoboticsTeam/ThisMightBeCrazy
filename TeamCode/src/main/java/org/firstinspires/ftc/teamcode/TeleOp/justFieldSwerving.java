@@ -11,7 +11,7 @@ import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
-//@Disabled
+@Disabled
 @TeleOp(name = "justFieldSwerving", group = "Swerve")
 public class justFieldSwerving extends LinearOpMode {
 

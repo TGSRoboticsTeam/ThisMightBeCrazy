@@ -16,7 +16,7 @@ import com.qualcomm.robotcore.hardware.VoltageSensor;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 //@Disabled
 @TeleOp(name = "justSwerve", group = "Swerve")
-//@Disabled
+@Disabled
 public class justSwerve extends LinearOpMode {
 
     // --- 1. HARDWARE DECLARATIONS ---

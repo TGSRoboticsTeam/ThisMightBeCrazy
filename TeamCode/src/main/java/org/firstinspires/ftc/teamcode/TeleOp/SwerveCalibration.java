@@ -1,5 +1,6 @@
 package org.firstinspires.ftc.teamcode.TeleOp;
 
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.AnalogInput;
@@ -27,6 +28,7 @@ import com.qualcomm.robotcore.hardware.DcMotor;
  *   B              — clear snapshot, return to live readout
  *   All motors and servos are held at zero power throughout.
  */
+@Disabled
 @TeleOp(name = "SwerveCalibration", group = "Swerve")
 public class SwerveCalibration extends LinearOpMode {
 

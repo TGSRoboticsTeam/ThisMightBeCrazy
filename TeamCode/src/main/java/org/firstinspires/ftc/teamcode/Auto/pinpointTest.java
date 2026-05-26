@@ -1,6 +1,7 @@
 package org.firstinspires.ftc.teamcode.Auto;
 
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
@@ -27,6 +28,7 @@ import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
  * or the pod offsets may be wrong. Distance scale issues = wrong pod type.
  * Heading drift while pushing in a straight line = wrong pod offsets.
  */
+@Disabled
 @TeleOp(name = "pinpointTest", group = "Test")
 public class pinpointTest extends LinearOpMode {
 

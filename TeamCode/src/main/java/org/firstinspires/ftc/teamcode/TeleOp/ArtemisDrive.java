@@ -1,12 +1,12 @@
 package org.firstinspires.ftc.teamcode.TeleOp;
 
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
-import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
@@ -14,14 +14,15 @@ import com.qualcomm.robotcore.util.ElapsedTime;
 
 import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit;
 import org.firstinspires.ftc.vision.VisionPortal;
 import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
 import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 
 import java.util.List;
-@Disabled
-@TeleOp(name = "AndromedaDrive", group = "Swerve")
-public class AndromedaDrive extends LinearOpMode {
+
+@TeleOp(name = "ArtemisDrive", group = "Swerve")
+public class ArtemisDrive extends LinearOpMode {
 
     // --- 1. HARDWARE DECLARATIONS ---
     private DcMotor frontLeftDrive, frontRightDrive, backLeftDrive, backRightDrive;
@@ -31,11 +32,15 @@ public class AndromedaDrive extends LinearOpMode {
     private VoltageSensor voltageSensor;
 
     // --- MECHANISM MOTORS ---
-    private DcMotor topIntake, bottomIntake;
+    // Intake motors are DcMotorEx so we can read per-motor current for stall detection.
+    private DcMotorEx topIntake, bottomIntake;
     private DcMotor leftFly, rightFly;
 
     // --- BLOCKER SERVO ---
     private Servo blocker;
+
+    // --- LIGHT SERVO (AprilTag status indicator) ---
+    private Servo light;
 
     // --- PTO SERVO ---
     private Servo pto;
@@ -46,19 +51,56 @@ public class AndromedaDrive extends LinearOpMode {
     // --- TURRET SERVOS ---
     private Servo leftTurret, rightTurret;
     private double turretPosition = 0.5;
-    final double TURRET_SPEED    = 0.008; // position units per loop tick
+    final double TURRET_SPEED    = 0.008; // position units per loop tick (legacy/reference)
     final double TURRET_DEADBAND = 0.05;
+
+    // --- TURRET MANUAL MODE (G2 left stick X) ---
+    // Manual is faster than the old TURRET_SPEED. RT held slows it back down.
+    final double TURRET_SPEED_MANUAL = 0.016; // 2x — normal manual speed
+    final double TURRET_SPEED_SLOW   = 0.008; // RT held — fine control
+    final double TURRET_RT_THRESHOLD = 0.5;
+
+    // --- TURRET AUTOPILOT (G2 RB + dpad_up toggles) ---
+    private boolean turretAutopilot = false;            // false = manual, true = autopilot
+    private boolean turretAutopilotTogglePrev = false;  // rising-edge tracker for RB+dpad_up
+
+    // AIM SIGN: which way the servo must move to reduce bearing.
+    // If autopilot drives the turret AWAY from the tag, flip this to -1.0.
+    final double TURRET_AIM_SIGN = +1.0;
+
+    // Proportional aim gain: turret step per degree of bearing error.
+    final double TURRET_AIM_KP = 0.0020;
+    // Max position change per loop tick while aiming (anti-slew clamp).
+    final double TURRET_AIM_MAX_STEP = 0.020;
+    // Within this bearing (deg) the turret is "on target" and holds still.
+    final double TURRET_AIM_DEADBAND_DEG = 2.0;
+
+    // Search sweep: when autopilot is on but no tag is seen, drift at this
+    // speed, reversing at the 0/1 travel limits.
+    final double TURRET_SEARCH_SPEED = 0.006;
+    private int turretSearchDir = +1;   // +1 or -1, flips at the ends
 
     // --- VISION (AprilTag) ---
     private VisionPortal visionPortal;
     private AprilTagProcessor aprilTagProcessor;
-    final int TARGET_TAG_ID = 24;
+    final int TARGET_TAG_ID = 20;
 
     // ============================================================
     //   SERVO POSITIONS  <-- SET YOUR VALUES HERE
     // ============================================================
     final double BLOCKER_BLOCKED_POSITION = 0.15;
     final double BLOCKER_LAUNCH_POSITION  = 0.45;
+
+    // Blocker auto-return: after A moves the blocker to LAUNCH, it returns
+    // to BLOCKED this many seconds later. Pressing B cancels the timer.
+    final double BLOCKER_AUTO_RETURN_SECONDS = 2.0;
+
+    // Light servo positions (AprilTag status indicator)
+    final double LIGHT_TAG_NOT_SEEN  = 0.278;  // no tag detected
+    final double LIGHT_TAG_SEEN      = 0.385;  // tag detected, not centered
+    final double LIGHT_TAG_CENTERED  = 0.444;  // tag detected and centered (<2 deg bearing)
+    final double LIGHT_CENTERED_BEARING_DEG = 2.0;
+    final double LIGHT_PTO_ENGAGED   = 0.0;    // PTO engaged — overrides tag states
 
     final double PTO_DISENGAGED = 0.8;
     final double PTO_ENGAGED    = 0.5;
@@ -99,6 +141,22 @@ public class AndromedaDrive extends LinearOpMode {
     private boolean g2DpadUpPrev   = false;
     private boolean g2DpadDownPrev = false;
 
+    // --- 6d. INTAKE REVERSE-HOLD (G1 dpad_left) ---
+    // While dpad_left is held (PTO disengaged), run intake in reverse at this power.
+    // The intake's normal toggle state is preserved and resumes on release.
+    final double INTAKE_REVERSE_HOLD_POWER = 0.50;
+
+    // --- 6e. INTAKE STALL DETECTION (current-based) ---
+    // 5000 Series motor: stall current @12V = 9.2A. Two mechanically-linked motors
+    // share the load, so 7.0A sustained on either motor indicates a genuine jam.
+    // If max(topIntake, bottomIntake) current exceeds this for longer than
+    // INTAKE_STALL_TIME_SECONDS continuously, the intake auto-toggles OFF.
+    final double INTAKE_STALL_CURRENT_AMPS = 7.0;
+    final double INTAKE_STALL_TIME_SECONDS = 1.0;
+    private ElapsedTime intakeStallTimer = new ElapsedTime();
+    private boolean intakeStallTiming = false;   // true while current is above threshold
+    private boolean intakeStallTripped = false;  // true on the loop a stall shut the intake off
+
     // --- 7. TOGGLES / STATES ---
     private boolean rightStickButtonPreviouslyPressed = false;
 
@@ -109,10 +167,28 @@ public class AndromedaDrive extends LinearOpMode {
     // Flywheel toggle
     private boolean flywheelRunning = false;
     private boolean leftTriggerPreviouslyPressed = false;
+    // Reset each time the flywheel toggles ON; measures continuous run time.
+    private ElapsedTime flywheelOnTimer = new ElapsedTime();
 
     // Blocker — A = launch, B = blocked
     private boolean aButtonPreviouslyPressed = false;
     private boolean bButtonPreviouslyPressed = false;
+
+    // Blocker auto-return timer: armed by A (launch), cancelled by B.
+    private boolean blockerAutoReturnArmed = false;
+    private ElapsedTime blockerAutoReturnTimer = new ElapsedTime();
+
+    // Blocker-launch sequence: G1 A registers a pending-open request. The
+    // blocker only actually opens once the flywheel has been running
+    // continuously for BLOCKER_FLYWHEEL_SPINUP_SECONDS. After it opens, the
+    // intake is forced to full power (the toggle speed) once
+    // BLOCKER_LAUNCH_INTAKE_DELAY has elapsed. Closing the blocker cuts
+    // intake AND flywheel.
+    final double BLOCKER_FLYWHEEL_SPINUP_SECONDS = 0.7; // flywheel must be on this long
+    final double BLOCKER_LAUNCH_INTAKE_DELAY     = 0.4; // intake delay after blocker opens
+    private boolean blockerOpenPending = false;      // A pressed, waiting for flywheel spin-up
+    private boolean blockerLaunchMode  = false;      // true between blocker-open and close
+    private ElapsedTime blockerLaunchTimer = new ElapsedTime();
 
     // Ramp-down state for graceful coast-to-stop
     private boolean intakeRampingDown   = false;
@@ -136,34 +212,31 @@ public class AndromedaDrive extends LinearOpMode {
         initializeHardware();
         initializeVision();
 
-        blocker.setPosition(BLOCKER_BLOCKED_POSITION);
-        pto.setPosition(PTO_DISENGAGED);
-        leftTurret.setPosition(turretPosition);
-        rightTurret.setPosition(turretPosition);
+        // No servo commands during init — servos hold their power-on position
+        // until the main loop runs after start. Match-start positioning happens
+        // on the first loop iteration below.
 
-        telemetry.addLine("AndromedaDrive ready.");
-        telemetry.addLine("G1 Right Trigger:  toggle intakes");
-        telemetry.addLine("G1 Left Trigger:   toggle flywheels");
-        telemetry.addLine("G1 A:              blocker -> launch position");
-        telemetry.addLine("G1 B:              blocker -> blocked / turret -> 0");
-        telemetry.addLine("G1 dpad_up:        intake 90% / reset heading");
-        telemetry.addLine("G1 dpad_down:      intake 60%");
-        telemetry.addLine("G1 RB + dpad_up:   PTO engage");
-        telemetry.addLine("G1 RB + dpad_down: PTO disengage");
-        telemetry.addLine("  PTO active: hold BOTH triggers = intakes backward");
-        telemetry.addLine("G1 RB:             slow mode (when PTO inactive)");
-        telemetry.addLine("G1 L3:             lock wheels (X)");
-        telemetry.addLine("G2 Left Stick X:   turret");
-        telemetry.addLine("G2 dpad_up:        flywheel speed +0.05");
-        telemetry.addLine("G2 dpad_down:      flywheel speed -0.05");
-        telemetry.addLine("G2 RT + dpad:      fine step (0.01)");
+        telemetry.addData("Status", "ArtemisDrive ready");
         telemetry.update();
 
         waitForStart();
 
+        // One-time servo positioning, AFTER start (not during init, so nothing
+        // moves on the field before the match). Runs once on the first loop.
+        boolean servosInitialized = false;
+
         double targetAngleFL = 0, targetAngleFR = 0, targetAngleBL = 0, targetAngleBR = 0;
 
         while (opModeIsActive()) {
+
+            if (!servosInitialized) {
+                blocker.setPosition(BLOCKER_BLOCKED_POSITION);
+                pto.setPosition(PTO_DISENGAGED);
+                leftTurret.setPosition(turretPosition);
+                rightTurret.setPosition(turretPosition);
+                light.setPosition(LIGHT_TAG_NOT_SEEN);
+                servosInitialized = true;
+            }
 
             boolean rbHeld = gamepad1.right_bumper;
 
@@ -180,6 +253,8 @@ public class AndromedaDrive extends LinearOpMode {
                 // Stop intake toggle state so normal mode is clean on disengage
                 intakeRunning     = false;
                 intakeRampingDown = false;
+                // Clear any stall-detection state so it doesn't carry across modes
+                intakeStallTiming = false;
             }
             if (ptoDpadDownNow && !ptoDpadDownPreviouslyPressed) {
                 ptoEngaged = false;
@@ -190,20 +265,34 @@ public class AndromedaDrive extends LinearOpMode {
             ptoDpadDownPreviouslyPressed = ptoDpadDownNow;
 
             // ============================================================
+            //   TURRET AUTOPILOT TOGGLE  (G2 RB + dpad_up)
+            //   Rising edge toggles between autopilot and manual turret modes.
+            //   Checked before the flywheel adjust so RB+dpad_up does NOT
+            //   also nudge the flywheel speed.
+            // ============================================================
+            boolean g2RbHeld = gamepad2.right_bumper;
+            boolean turretAutopilotToggleNow = g2RbHeld && gamepad2.dpad_up;
+            if (turretAutopilotToggleNow && !turretAutopilotTogglePrev) {
+                turretAutopilot = !turretAutopilot;
+            }
+            turretAutopilotTogglePrev = turretAutopilotToggleNow;
+
+            // ============================================================
             //   FLYWHEEL MANUAL SPEED ADJUST  (G2 dpad up/down)
-            //   dpad always adjusts. Step = 0.05 normally, 0.01 with RT held.
+            //   dpad adjusts ONLY when RB is not held (RB+dpad is the turret
+            //   autopilot toggle). Step = 0.05 normally, 0.01 with RT held.
             //   Rising-edge: each tap nudges once, clamped to [0, 1].
             // ============================================================
-            boolean g2RtHeld      = gamepad2.right_trigger > 0.5;
+            boolean g2RtHeld      = gamepad2.right_trigger > TURRET_RT_THRESHOLD;
             double  flywheelStep  = g2RtHeld ? FLYWHEEL_SPEED_STEP_FINE
                     : FLYWHEEL_SPEED_STEP_COARSE;
             boolean g2DpadUpNow   = gamepad2.dpad_up;
             boolean g2DpadDownNow = gamepad2.dpad_down;
 
-            if (g2DpadUpNow && !g2DpadUpPrev) {
+            if (g2DpadUpNow && !g2DpadUpPrev && !g2RbHeld) {
                 flywheelSpeedManual += flywheelStep;
             }
-            if (g2DpadDownNow && !g2DpadDownPrev) {
+            if (g2DpadDownNow && !g2DpadDownPrev && !g2RbHeld) {
                 flywheelSpeedManual -= flywheelStep;
             }
             flywheelSpeedManual = Math.max(0.0, Math.min(1.0, flywheelSpeedManual));
@@ -237,11 +326,14 @@ public class AndromedaDrive extends LinearOpMode {
             //     Anything else → intakes stop
             //     All other mechanisms are frozen (no trigger/button changes
             //     processed for flywheel, blocker, turret)
+            //     dpad_left reverse-hold and stall detection are NOT active here.
             //
             //   PTO INACTIVE:
-            //     Normal right-trigger toggle behavior
+            //     Normal right-trigger toggle behavior,
+            //     plus dpad_left reverse-hold and current-based stall detection.
             // ============================================================
-            double intakePower = 0.0;
+            double intakePower = 0.0;          // forward-positive command (pre-sign)
+            boolean intakeReverseHoldActive = false;
 
             if (ptoEngaged) {
                 boolean bothTriggersHeld = (gamepad1.left_trigger > 0.5) && (gamepad1.right_trigger > 0.5);
@@ -286,8 +378,74 @@ public class AndromedaDrive extends LinearOpMode {
                     }
                 }
 
+                // --------------------------------------------------------
+                //   BLOCKER-LAUNCH INTAKE OVERRIDE
+                //   While blocker-launch mode is active AND the 0.4s delay
+                //   since the blocker opened has elapsed, force the intake on
+                //   at the normal toggle speed (intakeSpeedTarget), overriding
+                //   the right-trigger toggle even if it was off.
+                // --------------------------------------------------------
+                if (blockerLaunchMode
+                        && blockerLaunchTimer.seconds() >= BLOCKER_LAUNCH_INTAKE_DELAY) {
+                    intakePower = intakeSpeedTarget;
+                    // Clear ramp-down so it doesn't fight the override.
+                    intakeRampingDown = false;
+                }
+
+                // --------------------------------------------------------
+                //   INTAKE REVERSE-HOLD  (G1 dpad_left)
+                //   While held, override the intake command with a reverse
+                //   run at 50%. Normal toggle state is untouched and resumes
+                //   automatically when dpad_left is released.
+                //   Reverse-hold wins over the blocker-launch override so the
+                //   driver can always manually clear a jam.
+                // --------------------------------------------------------
+                intakeReverseHoldActive = gamepad1.dpad_left;
+                if (intakeReverseHoldActive) {
+                    intakePower = -INTAKE_REVERSE_HOLD_POWER;
+                }
+
+                // topIntake/bottomIntake spin forward on negative power in this
+                // robot's wiring (see original mapping), so the command is negated.
                 topIntake.setPower(-intakePower);
                 bottomIntake.setPower(-intakePower);
+
+                // --------------------------------------------------------
+                //   INTAKE STALL DETECTION  (current-based, PTO inactive only)
+                //   Only arm while the intake is actively commanded forward via
+                //   the toggle. Reverse-hold and ramp-down are excluded so they
+                //   can't trip the stall logic.
+                // --------------------------------------------------------
+                boolean stallCheckArmed = intakeRunning && !intakeReverseHoldActive;
+                if (stallCheckArmed) {
+                    double topCurrent = topIntake.getCurrent(CurrentUnit.AMPS);
+                    double botCurrent = bottomIntake.getCurrent(CurrentUnit.AMPS);
+                    double maxCurrent = Math.max(topCurrent, botCurrent);
+
+                    if (maxCurrent > INTAKE_STALL_CURRENT_AMPS) {
+                        if (!intakeStallTiming) {
+                            intakeStallTiming = true;
+                            intakeStallTimer.reset();
+                        } else if (intakeStallTimer.seconds() >= INTAKE_STALL_TIME_SECONDS) {
+                            // Sustained stall — toggle intake OFF.
+                            // No lockout: driver may immediately re-toggle.
+                            intakeRunning      = false;
+                            intakeRampingDown  = false;
+                            intakeStallTiming  = false;
+                            intakeStallTripped = true;
+                            // Cut power this loop so the jammed motors stop now.
+                            topIntake.setPower(0.0);
+                            bottomIntake.setPower(0.0);
+                            intakePower = 0.0;
+                        }
+                    } else {
+                        // Current dropped back below threshold — reset the timer.
+                        intakeStallTiming = false;
+                    }
+                } else {
+                    // Intake not in a state we monitor — keep stall timer disarmed.
+                    intakeStallTiming = false;
+                }
 
                 // --------------------------------------------------------
                 //   FLYWHEEL TOGGLE  (Left Trigger)
@@ -304,39 +462,72 @@ public class AndromedaDrive extends LinearOpMode {
                     } else {
                         flywheelRampingDown = false;
                         flywheelRunning     = true;
+                        // Start measuring continuous run time for blocker spin-up gate.
+                        flywheelOnTimer.reset();
                     }
                 }
                 leftTriggerPreviouslyPressed = leftTriggerCurrentlyPressed;
 
                 // --------------------------------------------------------
-                //   BLOCKER  (A = launch, B = blocked)
-                //   G1 B also zeroes the turret servos.
+                //   BLOCKER  (A = launch request, B = blocked)
+                //   G1 A registers a pending-open request. The blocker only
+                //   opens once the flywheel has run continuously for
+                //   BLOCKER_FLYWHEEL_SPINUP_SECONDS; if that's already met it
+                //   opens immediately. Opening arms the 2s auto-return and
+                //   starts the blocker-launch intake delay.
+                //   G1 B moves to BLOCKED, cancels everything, cuts mechanisms.
                 // --------------------------------------------------------
                 boolean aButtonCurrentlyPressed = gamepad1.a;
                 boolean bButtonCurrentlyPressed = gamepad1.b;
 
-                if (aButtonCurrentlyPressed && !aButtonPreviouslyPressed)
+                if (aButtonCurrentlyPressed && !aButtonPreviouslyPressed) {
+                    // Register the request — actual open is gated below.
+                    blockerOpenPending = true;
+                }
+
+                // Open the blocker once the flywheel spin-up gate is satisfied:
+                // flywheel must be running NOW and have been for >= 0.7s.
+                if (blockerOpenPending
+                        && flywheelRunning
+                        && flywheelOnTimer.seconds() >= BLOCKER_FLYWHEEL_SPINUP_SECONDS) {
                     blocker.setPosition(BLOCKER_LAUNCH_POSITION);
+                    blockerOpenPending = false;
+                    // Arm the auto-return timer.
+                    blockerAutoReturnArmed = true;
+                    blockerAutoReturnTimer.reset();
+                    // Begin blocker-launch mode: after a delay the intake is
+                    // forced to full power. Timer counts from the open.
+                    blockerLaunchMode = true;
+                    blockerLaunchTimer.reset();
+                }
+
                 if (bButtonCurrentlyPressed && !bButtonPreviouslyPressed) {
                     blocker.setPosition(BLOCKER_BLOCKED_POSITION);
-                    turretPosition = 0.0;
-                    leftTurret.setPosition(turretPosition);
-                    rightTurret.setPosition(turretPosition);
+                    // B cancels a pending auto-return and any pending open.
+                    blockerAutoReturnArmed = false;
+                    blockerOpenPending     = false;
+                    // Blocker closed by B — end launch mode and cut intake+flywheel.
+                    if (blockerLaunchMode) {
+                        blockerLaunchMode = false;
+                        cutIntakeAndFlywheel();
+                    }
+                }
+
+                // Auto-return: once 2s have elapsed since the blocker opened,
+                // send it back to BLOCKED and disarm. This also ends launch
+                // mode and cuts intake + flywheel.
+                if (blockerAutoReturnArmed
+                        && blockerAutoReturnTimer.seconds() >= BLOCKER_AUTO_RETURN_SECONDS) {
+                    blocker.setPosition(BLOCKER_BLOCKED_POSITION);
+                    blockerAutoReturnArmed = false;
+                    if (blockerLaunchMode) {
+                        blockerLaunchMode = false;
+                        cutIntakeAndFlywheel();
+                    }
                 }
 
                 aButtonPreviouslyPressed = aButtonCurrentlyPressed;
                 bButtonPreviouslyPressed = bButtonCurrentlyPressed;
-
-                // --------------------------------------------------------
-                //   TURRET  (Gamepad 2 left stick X — both servos in sync)
-                // --------------------------------------------------------
-                double turretStick = gamepad2.left_stick_x;
-                if (Math.abs(turretStick) > TURRET_DEADBAND) {
-                    turretPosition += turretStick * TURRET_SPEED;
-                    turretPosition  = Math.max(0.0, Math.min(1.0, turretPosition));
-                    leftTurret.setPosition(turretPosition);
-                    rightTurret.setPosition(turretPosition);
-                }
             }
 
             // ============================================================
@@ -442,7 +633,7 @@ public class AndromedaDrive extends LinearOpMode {
             ModuleDebug br = runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  speedBackRight,  targetAngleBR, "BR", voltageFactor);
 
             // ============================================================
-            //   APRILTAG DETECTION (Tag ID 24)
+            //   APRILTAG DETECTION (Tag ID 20)
             // ============================================================
             AprilTagDetection targetTag = null;
             List<AprilTagDetection> currentDetections = aprilTagProcessor.getDetections();
@@ -454,67 +645,92 @@ public class AndromedaDrive extends LinearOpMode {
             }
 
             // ============================================================
-            //   TELEMETRY
+            //   LIGHT SERVO (AprilTag status indicator)
+            //   PTO engaged        -> LIGHT_PTO_ENGAGED   (0.0) — overrides all
+            //   not seen           -> LIGHT_TAG_NOT_SEEN  (0.278)
+            //   seen, not centered -> LIGHT_TAG_SEEN      (0.385)
+            //   seen and centered  -> LIGHT_TAG_CENTERED  (0.444)
+            //   Camera is landscape, so "centered" uses bearing only.
             // ============================================================
-            telemetry.addLine("=== PRIORITY ===");
-            if (targetTag != null && targetTag.ftcPose != null) {
-                telemetry.addData("Distance", "%.2f in", targetTag.ftcPose.range);
-            } else {
-                telemetry.addData("Distance", "no tag");
-            }
-            telemetry.addData("Flywheel Speed", "%.2f", flywheelSpeedManual);
-
-            telemetry.addLine("=== TURRET CAM (Tag 24) ===");
-            if (targetTag != null) {
-                telemetry.addData("Tag 24", "DETECTED");
-                if (targetTag.ftcPose != null) {
-                    telemetry.addData("Range",   "%.2f in", targetTag.ftcPose.range);
-                    telemetry.addData("Bearing", "%.1f deg", targetTag.ftcPose.bearing);
-                    telemetry.addData("Yaw",     "%.1f deg", targetTag.ftcPose.yaw);
-                } else {
-                    telemetry.addLine("ftcPose unavailable (check camera calibration)");
-                }
-            } else {
-                telemetry.addData("Tag 24", "not seen");
-            }
-
-            telemetry.addLine("=== ANDROMEDA MECHANISMS ===");
-            telemetry.addData("PTO",          ptoEngaged ? "ENGAGED (0.5)" : "DISENGAGED (0.7)");
+            double lightPosition = LIGHT_TAG_NOT_SEEN;
+            boolean tagCentered = false;
             if (ptoEngaged) {
-                boolean bothHeld = (gamepad1.left_trigger > 0.5) && (gamepad1.right_trigger > 0.5);
-                telemetry.addData("PTO Intake",   bothHeld ? "BACKWARD (both triggers)" : "STOPPED");
+                lightPosition = LIGHT_PTO_ENGAGED;
+            } else if (targetTag != null && targetTag.ftcPose != null) {
+                tagCentered = Math.abs(targetTag.ftcPose.bearing) <= LIGHT_CENTERED_BEARING_DEG;
+                lightPosition = tagCentered ? LIGHT_TAG_CENTERED : LIGHT_TAG_SEEN;
             }
-            telemetry.addData("Intake",       intakeRunning ? "RUNNING" : (intakeRampingDown ? "RAMPING DOWN" : "OFF"));
-            telemetry.addData("IntakeSpeed",  "%.0f%%  (pwr %.2f)", intakeSpeedTarget * 100, intakePower);
-            telemetry.addData("Flywheel",     flywheelRunning ? "RUNNING" : (flywheelRampingDown ? "RAMPING DOWN" : "OFF"));
-            telemetry.addData("FlywheelPwr",  "%.2f (manual %.2f)", flywheelPower, flywheelSpeedManual);
-            telemetry.addData("Blocker",      blocker.getPosition() == BLOCKER_LAUNCH_POSITION ? "LAUNCH" : "BLOCKED");
-            telemetry.addData("TurretPos",    "%.3f", turretPosition);
+            light.setPosition(lightPosition);
 
-            telemetry.addLine("=== FIELD CENTRIC INPUTS ===");
-            telemetry.addData("fieldX/fieldY/rot",   "%.2f  %.2f  %.2f", fieldX, fieldY, rot);
-            telemetry.addData("rawHeading(rad)",     "%.3f", rawHeading);
-            telemetry.addData("botHeading(rad)",     "%.3f", botHeading);
-            telemetry.addData("rawPitch(rad)",       "%.3f", rawPitch);
-            telemetry.addData("rawRoll(rad)",        "%.3f", rawRoll);
-            telemetry.addData("robotX/robotY",       "%.2f  %.2f", robotX, robotY);
+            // ============================================================
+            //   TURRET CONTROL  (autopilot or manual)
+            //   Frozen entirely while PTO is engaged (same as all other
+            //   mechanisms). Mode is toggled by G2 RB + dpad_up above.
+            //
+            //   AUTOPILOT: aims at Tag 20 using bearing. Tag visible -> step
+            //   proportionally toward bearing 0 (holds within deadband).
+            //   Tag not visible -> slow sweep, reversing at the 0/1 ends.
+            //
+            //   MANUAL: G2 left stick X, faster than legacy (RT held = slow).
+            //   X -> jump to 0, B -> jump to 1.
+            //
+            //   Position wraps 0<->1 in both modes (turret travels a full
+            //   finite 360deg; the servo range 0..1 is continuous).
+            // ============================================================
+            if (!ptoEngaged) {
+                if (turretAutopilot) {
+                    // ---------- AUTOPILOT ----------
+                    if (targetTag != null && targetTag.ftcPose != null) {
+                        double bearing = targetTag.ftcPose.bearing;
+                        if (Math.abs(bearing) > TURRET_AIM_DEADBAND_DEG) {
+                            // Proportional step toward bearing 0, slew-limited.
+                            double step = TURRET_AIM_SIGN * TURRET_AIM_KP * bearing;
+                            step = Math.max(-TURRET_AIM_MAX_STEP,
+                                    Math.min(TURRET_AIM_MAX_STEP, step));
+                            turretPosition = wrapUnit(turretPosition + step);
+                        }
+                        // else: within deadband — on target, hold still.
+                    } else {
+                        // No tag — slow sweep, reverse direction at the ends.
+                        turretPosition += turretSearchDir * TURRET_SEARCH_SPEED;
+                        if (turretPosition >= 1.0) {
+                            turretPosition = 1.0;
+                            turretSearchDir = -1;
+                        } else if (turretPosition <= 0.0) {
+                            turretPosition = 0.0;
+                            turretSearchDir = +1;
+                        }
+                    }
+                } else {
+                    // ---------- MANUAL ----------
+                    // X -> all the way to 0, B -> all the way to 1.
+                    if (gamepad2.x) {
+                        turretPosition = 0.0;
+                    } else if (gamepad2.b) {
+                        turretPosition = 1.0;
+                    } else {
+                        double turretStick = gamepad2.left_stick_x;
+                        if (Math.abs(turretStick) > TURRET_DEADBAND) {
+                            // RT held -> slow speed for fine control.
+                            double turretSpeed = (gamepad2.right_trigger > TURRET_RT_THRESHOLD)
+                                    ? TURRET_SPEED_SLOW
+                                    : TURRET_SPEED_MANUAL;
+                            turretPosition = wrapUnit(turretPosition + turretStick * turretSpeed);
+                        }
+                    }
+                }
 
-            telemetry.addLine("=== KINEMATICS ===");
-            telemetry.addData("A B C D",             "%.2f  %.2f  %.2f  %.2f", A, B, C, D);
-            telemetry.addData("spd FL FR BL BR",     "%.2f  %.2f  %.2f  %.2f", speedFrontLeft, speedFrontRight, speedBackLeft, speedBackRight);
-            telemetry.addData("maxSpeed(norm)",      "%.2f", maxSpeed);
-            telemetry.addData("driverActive",        driverActiveForSwerve);
-            telemetry.addData("framesSinceMoved",    framesSinceLastMoved);
-            telemetry.addData("lockWheels",          lockWheels);
+                leftTurret.setPosition(turretPosition);
+                rightTurret.setPosition(turretPosition);
+            }
 
-            telemetry.addLine("=== MODULES (raw/adj/target/delta/servo/speed) ===");
-            telemetry.addData("FL", fl.toShortString());
-            telemetry.addData("FR", fr.toShortString());
-            telemetry.addData("BL", bl.toShortString());
-            telemetry.addData("BR", br.toShortString());
-
-            telemetry.addLine("=== SYSTEM ===");
-            telemetry.addData("Voltage", "%.2f V (factor %.3f)", voltage, voltageFactor);
+            // ============================================================
+            //   TELEMETRY  (minimal — PTO, turret mode, tag visibility)
+            // ============================================================
+            telemetry.addData("PTO", ptoEngaged ? "ENGAGED" : "DISENGAGED");
+            telemetry.addData("Turret", turretAutopilot ? "AUTOPILOT" : "MANUAL");
+            telemetry.addData("Tag " + TARGET_TAG_ID,
+                    targetTag != null ? "VISIBLE" : "NOT SEEN");
             telemetry.update();
         }
 
@@ -522,6 +738,27 @@ public class AndromedaDrive extends LinearOpMode {
         if (visionPortal != null) {
             visionPortal.close();
         }
+    }
+
+    // ============================================================
+    //   BLOCKER-CLOSE CUT
+    //   Hard-stops the intake and flywheel and clears all their run /
+    //   ramp state, overriding the toggles. Called when the blocker
+    //   returns to BLOCKED (auto-return or G1 B). Driver must re-press
+    //   the triggers to restart either mechanism.
+    // ============================================================
+    private void cutIntakeAndFlywheel() {
+        // Intake off
+        intakeRunning     = false;
+        intakeRampingDown = false;
+        topIntake.setPower(0.0);
+        bottomIntake.setPower(0.0);
+
+        // Flywheel off — immediate hard stop, no graceful ramp.
+        flywheelRunning     = false;
+        flywheelRampingDown = false;
+        leftFly.setPower(0.0);
+        rightFly.setPower(0.0);
     }
 
     // ============================================================
@@ -538,9 +775,19 @@ public class AndromedaDrive extends LinearOpMode {
         visionPortal = new VisionPortal.Builder()
                 .setCamera(hardwareMap.get(WebcamName.class, "turretCam"))
                 .addProcessor(aprilTagProcessor)
-                .setCameraResolution(new android.util.Size(640, 480))
-                .enableLiveView(true)
+                // 320x240 instead of 640x480 — quarter the pixels, much higher fps.
+                .setCameraResolution(new android.util.Size(320, 240))
+                // LiveView off — frees CPU/bandwidth, raises effective frame rate.
+                .enableLiveView(false)
+                // MJPEG at low resolution lets the webcam stream at its highest
+                // supported frame rate. Actual fps is set by the camera hardware's
+                // available modes — there is no separate numeric fps cap to raise.
+                .setStreamFormat(VisionPortal.StreamFormat.MJPEG)
                 .build();
+
+        // Push the AprilTag detector decimation down a touch so detection keeps
+        // up at the higher frame rate (higher decimation = faster, shorter range).
+        aprilTagProcessor.setDecimation(2);
     }
 
     // ============================================================
@@ -562,8 +809,9 @@ public class AndromedaDrive extends LinearOpMode {
         backLeftEncoder   = hardwareMap.get(AnalogInput.class, "backLeftEncoder");
         backRightEncoder  = hardwareMap.get(AnalogInput.class, "backRightEncoder");
 
-        topIntake    = hardwareMap.get(DcMotor.class, "topIntake");
-        bottomIntake = hardwareMap.get(DcMotor.class, "bottomIntake");
+        // Intake motors as DcMotorEx for current sensing (stall detection).
+        topIntake    = hardwareMap.get(DcMotorEx.class, "topIntake");
+        bottomIntake = hardwareMap.get(DcMotorEx.class, "bottomIntake");
         leftFly      = hardwareMap.get(DcMotor.class, "leftFly");
         rightFly     = hardwareMap.get(DcMotor.class, "rightFly");
 
@@ -582,6 +830,8 @@ public class AndromedaDrive extends LinearOpMode {
 
         leftTurret  = hardwareMap.get(Servo.class, "leftTurret");
         rightTurret = hardwareMap.get(Servo.class, "rightTurret");
+
+        light = hardwareMap.get(Servo.class, "light");
 
         voltageSensor = hardwareMap.voltageSensor.iterator().next();
         imu = hardwareMap.get(IMU.class, "imu");
@@ -679,6 +929,17 @@ public class AndromedaDrive extends LinearOpMode {
         while (angle >  Math.PI) angle -= 2 * Math.PI;
         while (angle < -Math.PI) angle += 2 * Math.PI;
         return angle;
+    }
+
+    /**
+     * Wraps a servo position into [0, 1) treating the range as continuous:
+     * going past 1 jumps to 0 and keeps increasing; going below 0 jumps to 1.
+     * Used by the turret, which travels a finite 360deg across the 0..1 range.
+     */
+    private double wrapUnit(double pos) {
+        while (pos >= 1.0) pos -= 1.0;
+        while (pos <  0.0) pos += 1.0;
+        return pos;
     }
 
     private void resetMotors(DcMotor... motors) {
