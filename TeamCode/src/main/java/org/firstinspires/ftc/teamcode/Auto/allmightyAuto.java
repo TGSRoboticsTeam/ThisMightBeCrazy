@@ -21,8 +21,8 @@ import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 
 import java.util.List;
 
-@Autonomous(name = "omnipotentBackAuto", group = "Swerve")
-public class omnipotentBackAuto extends LinearOpMode {
+@Autonomous(name = "allmightyAuto", group = "Swerve")
+public class allmightyAuto extends LinearOpMode {
 
     // ============================================================
     // HARDWARE
@@ -41,9 +41,9 @@ public class omnipotentBackAuto extends LinearOpMode {
 
     private AprilTagProcessor aprilTagProcessor;
     private VisionPortal visionPortal;
-    private double turretStartPos = 0.33;
+    private double turretStartPos = 0.67;
 
-    final int TARGET_TAG_ID = 24;
+    final int TARGET_TAG_ID = 20;
     final double LIGHT_TAG_NOT_SEEN  = 0.278;
     final double LIGHT_TAG_LEFT      = 0.388;
     final double LIGHT_TAG_RIGHT     = 0.555;

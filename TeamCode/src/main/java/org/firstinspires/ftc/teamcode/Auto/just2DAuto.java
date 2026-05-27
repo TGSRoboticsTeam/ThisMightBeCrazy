@@ -2,6 +2,7 @@ package org.firstinspires.ftc.teamcode.Auto;
 
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
@@ -26,6 +27,7 @@ import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
  *   driveX(+) = +X direction (Pinpoint X increases)
  *   driveY(+) = +Y direction after Y_DIRECTION_SIGN correction
  */
+@Disabled
 @Autonomous(name = "just2DAuto", group = "Swerve")
 public class just2DAuto extends LinearOpMode {
 

@@ -2,6 +2,7 @@ package org.firstinspires.ftc.teamcode.Auto;
 
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
@@ -21,6 +22,7 @@ import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
  * Positive driveDistance() = strafe in the direction that makes Y increase.
  * If that's the wrong physical direction, flip Y_DIRECTION_SIGN below.
  */
+@Disabled
 @Autonomous(name = "justAutoStrafe", group = "Swerve")
 public class JustAutoStrafe extends LinearOpMode {
 

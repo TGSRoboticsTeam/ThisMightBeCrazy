@@ -18,6 +18,7 @@ import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
 import org.firstinspires.ftc.vision.VisionPortal;
 import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
 import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
@@ -26,6 +27,21 @@ import java.util.List;
 
 @TeleOp(name = "ApolloDrive", group = "Swerve")
 public class ApolloDrive extends LinearOpMode {
+
+    // ============================================================
+    //   PER-OPMODE CONFIG  (override these in a subclass)
+    //   The ONLY values that differ between ApolloDrive and its
+    //   variants (e.g. ArtemisDrive). Everything else is inherited.
+    //
+    //   Goal/tag field position, measured from the back-left corner
+    //   origin. Both axes are positive toward the goal in this
+    //   robot's odometry frame: X is to the right, Y is up the field.
+    //   Every term feeding the atan2 aim (odo.getPosX/Y and these)
+    //   is in the same frame, so the geometry is consistent.
+    // ============================================================
+    protected double getGoalFieldX()  { return 128.0; } // inches, +X toward the goal (right)
+    protected double getGoalFieldY()  { return 128.0; } // inches, +Y toward the goal (up the field)
+    protected int    getTargetTagId() { return 24; }
 
     // --- 1. HARDWARE DECLARATIONS ---
     private DcMotor frontLeftDrive, frontRightDrive, backLeftDrive, backRightDrive;
@@ -38,6 +54,14 @@ public class ApolloDrive extends LinearOpMode {
     // caching, clearBulkCache() is called once per loop and every sensor
     // read that loop is served from a single bus transaction instead of
     // one round trip per device — large loop-time savings.
+    //
+    // NOTE: the four swerve steering encoders are deliberately NOT served
+    // from the loop-top snapshot. Two of them live on the Expansion Hub,
+    // whose snapshot is fetched over the slower RS-485 link and at a
+    // different point in the loop than the Control Hub's — that asymmetry
+    // made the Expansion-Hub pods feel less responsive. A fresh
+    // clearBulkCache() is issued immediately before the encoder reads so
+    // all four pods read from snapshots taken at the same instant.
     private List<LynxModule> allHubs;
 
     // --- MECHANISM MOTORS ---
@@ -82,17 +106,13 @@ public class ApolloDrive extends LinearOpMode {
     // odo.getPosX/Y report absolute field inches and odo.getHeading is the
     // field heading.
     //
-    // The goal is at a FIXED, known field coordinate (constants below), so
-    // the turret aims by pure geometry: atan2(goal - robotPose). There is
+    // The goal is at a FIXED, known field coordinate (see getGoalFieldX/Y),
+    // so the turret aims by pure geometry: atan2(goal - robotPose). There is
     // no derived/stored tag position and no camera input to the aim — the
     // camera now only drives the light servo and reports tag distance.
     // Because the goal is a constant, the camera and odometry can never
     // disagree about it, which removes the old "jump on re-acquire" bug.
     private GoBildaPinpointDriver odo;
-
-    // Goal/tag field position, measured from the back-left corner origin.
-    final double GOAL_FIELD_X = 128; // inches, +X = to the right
-    final double GOAL_FIELD_Y = -128;  // inches, +Y = up the field
 
     // True once G1 dpad-up has zeroed the Pinpoint at the corner. Until
     // then the absolute pose is unknown and the turret should not auto-aim.
@@ -126,6 +146,50 @@ public class ApolloDrive extends LinearOpMode {
     // Camera-only readout — does NOT feed the aim. -1 until first seen.
     private double tagDistanceInches = -1.0;
 
+    // Pose-correction status (telemetry only).
+    private boolean camCorrectionAppliedLast = false; // a frame was accepted last loop
+    private double  camCorrectionJumpLast    = 0.0;   // implied jump of that frame (in)
+
+    // ============================================================
+    //   CAMERA POSE CORRECTION  (camera re-localizes the robot)
+    // ============================================================
+    // The camera, seeing the known-position goal, is used to correct
+    // Pinpoint position drift. It does NOT touch the turret aim directly
+    // and it does NOT touch heading — only robot X/Y.
+    //
+    // CAMERA MOUNT GEOMETRY:
+    //   - The lens is 5.5" out from the TURRET rotation axis and points
+    //     straight along the turret's look direction (no clocking offset).
+    //     So as the turret rotates, the lens sweeps an arc — this lever
+    //     rotates with (robotHeading + turretRelAngle).
+    //   - The turret axis is offset from the robot's odometry tracking
+    //     point. You stated the odometry point is ~0.5" FORWARD of the
+    //     turret axis, centered left/right. These constants encode the
+    //     vector FROM the turret axis TO the odometry point, in robot
+    //     frame, so the correction adds them directly. Hence FWD = +0.5.
+    //     This offset rotates with robotHeading.
+    //   - The 22.5 deg up-tilt does NOT enter here: horizontal distance
+    //     is taken from ftcPose.x/y (ground-plane components), so tilt is
+    //     irrelevant to the 2D correction.
+    final double CAM_LEVER_INCHES        = 5.5;   // turret axis -> lens
+    final double CAM_MOUNT_ANGLE_RAD     = 0.0;   // lens clocking on turret
+    // Vector from the TURRET AXIS to the ODOMETRY POINT, robot frame:
+    final double AXIS_TO_ODO_FWD_INCHES  = 0.5;   // odo point is 0.5" forward of axis
+    final double AXIS_TO_ODO_LEFT_INCHES = 0.0;   // centered left/right
+
+    // Correction gating + smoothing:
+    //   - Only correct while STATIONARY (no motion blur).
+    //   - Only when the tag is near frame-center (bearing small) where
+    //     AprilTag pose is most accurate.
+    //   - Reject any frame whose implied position is more than
+    //     CAM_CORRECTION_MAX_JUMP inches from the current odo pose — that
+    //     is a bad detection, not real drift.
+    //   - Blend gently: pose = (1-GAIN)*odo + GAIN*camera.
+    final double CAM_STATIONARY_STICK_DEADBAND = 0.05;
+    final double CAM_CORRECTION_MAX_BEARING_DEG = 8.0;
+    final double CAM_CORRECTION_MAX_JUMP        = 16.0; // inches
+    final double CAM_CORRECTION_GAIN            = 0.05; // per accepted frame
+
     // Pinpoint config (same hardware/config as the auto and pinpointTest).
     final GoBildaPinpointDriver.EncoderDirection ODO_X_DIR =
             GoBildaPinpointDriver.EncoderDirection.FORWARD;
@@ -137,7 +201,44 @@ public class ApolloDrive extends LinearOpMode {
     // --- VISION (AprilTag) ---
     private VisionPortal visionPortal;
     private AprilTagProcessor aprilTagProcessor;
-    final int TARGET_TAG_ID = 24;
+
+    // ============================================================
+    //   FLYWHEEL DISTANCE -> POWER CHARTS  (two separate regimes)
+    // ============================================================
+    // The flywheel has TWO distinct charts, one per spin-up regime. They
+    // are NOT one continuous curve and must not be connected — each is
+    // valid only within its own distance band and its own spin-up time.
+    //
+    //   NEAR regime  (tag <  76.5 in): NEAR chart, 1.20 s spin-up.
+    //   FAR  regime  (tag >= 76.5 in): FAR  chart, 3.15 s spin-up.
+    //
+    // When a tag is visible, flywheelSpeedManual is interpolated from
+    // whichever chart matches the measured distance. With no tag, the
+    // chart does not apply and the G2 dpad manual value is held.
+    //
+    // --- NEAR chart (tag < 76.5 in) ---
+    //   distance < 29.7 in : clamped to the 29.7 in power (0.75).
+    final double[] FLYWHEEL_CHART_DISTANCE = {
+            76.4, 71.4, 65.8, 60.5, 55.5, 50.1, 44.8, 40.0, 35.0, 29.7
+    };
+    final double[] FLYWHEEL_CHART_POWER = {
+            1.000, 0.975, 0.950, 0.910, 0.875, 0.850, 0.830, 0.815, 0.800, 0.750
+    };
+    // Boundary between the near and far regimes.
+    final double FLYWHEEL_CHART_MAX_DISTANCE = 76.5; // inches
+
+    // --- FAR chart (tag >= 76.5 in) ---
+    // Measured points: 118 in -> 0.95, 122 in -> 0.97, 128 in -> 1.00.
+    // These lie on a straight line of slope +0.005 power per inch:
+    //     power = FAR_BASE_POWER + FAR_SLOPE * (distance - FAR_BASE_DIST)
+    // The line is extrapolated across the WHOLE far range (76.5 in and
+    // up), then clamped to a maximum of 1.0 — coming closer than ~108 in
+    // the line would exceed full power, so it saturates at 1.0.
+    final double FAR_BASE_DIST   = 128.0; // reference point distance (in)
+    final double FAR_BASE_POWER  = 1.000; // power at FAR_BASE_DIST
+    final double FAR_SLOPE       = 0.005; // power per inch (+ = farther needs more)
+    final double FAR_POWER_MAX   = 1.000; // clamp ceiling
+
 
     // ============================================================
     //   SERVO POSITIONS  <-- SET YOUR VALUES HERE
@@ -147,7 +248,7 @@ public class ApolloDrive extends LinearOpMode {
 
     // Blocker auto-return: after A moves the blocker to LAUNCH, it returns
     // to BLOCKED this many seconds later. Pressing B cancels the timer.
-    final double BLOCKER_AUTO_RETURN_SECONDS = 3.0;
+    final double BLOCKER_AUTO_RETURN_SECONDS = 2.0;
 
     // Light servo positions (AprilTag status indicator)
     final double LIGHT_TAG_NOT_SEEN  = 0.278;  // no tag detected
@@ -184,10 +285,11 @@ public class ApolloDrive extends LinearOpMode {
     // --- 6. FLYWHEEL / INTAKE CONSTANTS ---
     final double MOTOR_COAST_RAMP_SECONDS = 0.5;
 
-    // --- 6b. INTAKE SPEED PRESETS ---
-    final double INTAKE_SPEED_HIGH = 0.90; // dpad_up
-    final double INTAKE_SPEED_LOW  = 0.60; // dpad_down
-    private double intakeSpeedTarget = INTAKE_SPEED_HIGH; // default
+    // --- 6b. INTAKE SPEED ---
+    // Intake runs at a single fixed speed (the G1 dpad speed presets were
+    // removed). intakeSpeedTarget is kept as the named power level.
+    final double INTAKE_SPEED_HIGH = 0.90;
+    private double intakeSpeedTarget = INTAKE_SPEED_HIGH; // fixed intake power
 
     // --- 6c. FLYWHEEL MANUAL SPEED (G2 dpad up/down; RT = fine step) ---
     final double FLYWHEEL_SPEED_STEP_COARSE = 0.05;   // per-tap, RT not held
@@ -235,12 +337,20 @@ public class ApolloDrive extends LinearOpMode {
 
     // Blocker-launch sequence: G1 A registers a pending-open request. The
     // blocker only actually opens once the flywheel has been running
-    // continuously for BLOCKER_FLYWHEEL_SPINUP_SECONDS. After it opens, the
+    // continuously for the required spin-up time. After it opens, the
     // intake is forced to full power (the toggle speed) once
     // BLOCKER_LAUNCH_INTAKE_DELAY has elapsed. Closing the blocker cuts
     // intake AND flywheel.
-    final double BLOCKER_FLYWHEEL_SPINUP_SECONDS = 1.2; // flywheel must be on this long
-    final double BLOCKER_LAUNCH_INTAKE_DELAY     = 0.4; // intake delay after blocker opens
+    //
+    // SPIN-UP TIME IS DISTANCE-DEPENDENT:
+    //   - tag at/over FLYWHEEL_CHART_MAX_DISTANCE (76.5 in), or no tag:
+    //         BLOCKER_FLYWHEEL_SPINUP_FAR  (3.15 s) — longer spin-up.
+    //   - tag closer than that:
+    //         BLOCKER_FLYWHEEL_SPINUP_NEAR (1.20 s).
+    // The required time is recomputed each loop from the live tag distance.
+    final double BLOCKER_FLYWHEEL_SPINUP_NEAR = 1.20; // tag < 76.5 in
+    final double BLOCKER_FLYWHEEL_SPINUP_FAR  = 3.15; // tag >= 76.5 in or no tag
+    final double BLOCKER_LAUNCH_INTAKE_DELAY  = 0.4;  // intake delay after blocker opens
     private boolean blockerOpenPending = false;      // A pressed, waiting for flywheel spin-up
     private boolean blockerLaunchMode  = false;      // true between blocker-open and close
     private ElapsedTime blockerLaunchTimer = new ElapsedTime();
@@ -348,6 +458,9 @@ public class ApolloDrive extends LinearOpMode {
             //   dpad adjusts ONLY when RB is not held (RB+dpad is the turret
             //   autopilot toggle). Step = 0.05 normally, 0.01 with RT held.
             //   Rising-edge: each tap nudges once, clamped to [0, 1].
+            //   NOTE: when the flywheel distance chart is active (tag visible
+            //   and within range) it overwrites flywheelSpeedManual each loop,
+            //   so this manual adjust only takes effect at long range / no tag.
             // ============================================================
             boolean g2RtHeld      = gamepad2.right_trigger > TURRET_RT_THRESHOLD;
             double  flywheelStep  = g2RtHeld ? FLYWHEEL_SPEED_STEP_FINE
@@ -367,17 +480,17 @@ public class ApolloDrive extends LinearOpMode {
             g2DpadDownPrev = g2DpadDownNow;
 
             // ============================================================
-            //   INTAKE SPEED PRESETS  (dpad_up = 90%, dpad_down = 60%)
-            //   dpad_up also resets field heading — only when RB is NOT held.
-            //   dpad_up ALSO zeroes the Pinpoint: the robot must be at the
-            //   back-left field corner, facing +X. This establishes absolute
-            //   field coordinates for the turret tracker.
+            //   FIELD ZERO  (G1 dpad_up, RB not held)
+            //   Zeroes the Pinpoint: the robot must be at the back-left field
+            //   corner, facing +X. This establishes absolute field
+            //   coordinates for the turret tracker. Also resets the IMU yaw.
+            //   (The old intake speed presets on G1 dpad were removed —
+            //   dpad_up now only does the field zero, dpad_down does nothing.)
             // ============================================================
             boolean dpadUpNow   = gamepad1.dpad_up;
             boolean dpadDownNow = gamepad1.dpad_down;
 
             if (dpadUpNow && !dpadUpPrev && !rbHeld) {
-                intakeSpeedTarget = INTAKE_SPEED_HIGH;
                 imu.resetYaw();
                 headingOffset = 0.0;
                 // Zero the Pinpoint at the field corner (0,0), heading 0 (+X).
@@ -385,9 +498,10 @@ public class ApolloDrive extends LinearOpMode {
                 // turret can aim at the fixed goal by pure geometry.
                 odo.resetPosAndIMU();
                 fieldZeroed = true;
-            }
-            if (dpadDownNow && !dpadDownPrev && !rbHeld) {
-                intakeSpeedTarget = INTAKE_SPEED_LOW;
+                // Zeroing the field auto-enables turret autopilot. It stays
+                // a normal toggle afterward (G2 RB + dpad_up) — this just
+                // forces it ON at each zero so tracking starts immediately.
+                turretAutopilot = true;
             }
             dpadUpPrev   = dpadUpNow;
             dpadDownPrev = dpadDownNow;
@@ -547,12 +661,16 @@ public class ApolloDrive extends LinearOpMode {
                 //   G1 A is a one-press launch button:
                 //     - flywheels OFF -> spin them up AND register the launch.
                 //       The blocker opens automatically once the flywheel has
-                //       run for BLOCKER_FLYWHEEL_SPINUP_SECONDS.
+                //       run for the required spin-up time.
                 //     - flywheels ON  -> register the launch; blocker opens once
-                //       the 0.7s spin-up gate is met (immediately if already met).
+                //       the spin-up gate is met (immediately if already met).
                 //   Either way, a single A press takes it all the way to launch.
                 //   The left trigger still toggles flywheels on/off independently.
                 //   G1 B moves to BLOCKED, cancels everything, cuts mechanisms.
+                //
+                //   The required spin-up time depends on tag distance: see
+                //   requiredSpinupSeconds() — 3.15 s at/over 76.5 in (or no
+                //   tag), 1.20 s closer in.
                 // --------------------------------------------------------
                 boolean aButtonCurrentlyPressed = gamepad1.a;
                 boolean bButtonCurrentlyPressed = gamepad1.b;
@@ -565,15 +683,16 @@ public class ApolloDrive extends LinearOpMode {
                         flywheelOnTimer.reset();
                     }
                     // ...and registers the launch. The blocker open is gated on
-                    // the 0.7s spin-up below, so one press goes cold -> launch.
+                    // the spin-up time below, so one press goes cold -> launch.
                     blockerOpenPending = true;
                 }
 
                 // Open the blocker once the flywheel spin-up gate is satisfied:
-                // flywheel must be running NOW and have been for >= 0.7s.
+                // flywheel must be running NOW and have been for at least the
+                // distance-dependent required spin-up time.
                 if (blockerOpenPending
                         && flywheelRunning
-                        && flywheelOnTimer.seconds() >= BLOCKER_FLYWHEEL_SPINUP_SECONDS) {
+                        && flywheelOnTimer.seconds() >= requiredSpinupSeconds()) {
                     blocker.setPosition(BLOCKER_LAUNCH_POSITION);
                     blockerOpenPending = false;
                     // Arm the auto-return timer.
@@ -711,18 +830,29 @@ public class ApolloDrive extends LinearOpMode {
             double voltage       = voltageSensor.getVoltage();
             double voltageFactor = (voltage > 0) ? Math.min(12.0 / voltage, 1.0) : 1.0;
 
+            // Fresh sensor snapshot for the swerve steering encoders. Two of
+            // the four encoders are on the Expansion Hub; under MANUAL bulk
+            // caching the Expansion Hub's loop-top snapshot is fetched over
+            // the slower RS-485 link at a different point in the loop than
+            // the Control Hub's, which made those pods feel less responsive.
+            // Clearing the cache again here forces all four runModule encoder
+            // reads below to pull from snapshots taken at this same instant.
+            for (LynxModule hub : allHubs) {
+                hub.clearBulkCache();
+            }
+
             ModuleDebug fl = runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  speedFrontLeft,  targetAngleFL, "FL", voltageFactor);
             ModuleDebug fr = runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, speedFrontRight, targetAngleFR, "FR", voltageFactor);
             ModuleDebug bl = runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   speedBackLeft,   targetAngleBL, "BL", voltageFactor);
             ModuleDebug br = runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  speedBackRight,  targetAngleBR, "BR", voltageFactor);
 
             // ============================================================
-            //   APRILTAG DETECTION (Tag ID 24)
+            //   APRILTAG DETECTION (target tag, see getTargetTagId())
             // ============================================================
             AprilTagDetection targetTag = null;
             List<AprilTagDetection> currentDetections = aprilTagProcessor.getDetections();
             for (AprilTagDetection detection : currentDetections) {
-                if (detection.id == TARGET_TAG_ID) {
+                if (detection.id == getTargetTagId()) {
                     targetTag = detection;
                     break;
                 }
@@ -737,12 +867,14 @@ public class ApolloDrive extends LinearOpMode {
             //   seen, on RIGHT -> LIGHT_TAG_RIGHT    (0.555)
             //   Camera is landscape, so side/centering use bearing only.
             //   FTC convention: bearing > 0 = tag to the LEFT, < 0 = RIGHT.
-            //   The camera also records tagDistanceInches for telemetry.
-            //   It does NOT feed the turret aim — the turret aims purely
-            //   by odometry geometry against the fixed goal coordinate.
+            //   The camera also records tagDistanceInches, which the flywheel
+            //   distance chart uses. It does NOT feed the turret aim — the
+            //   turret aims purely by odometry geometry against the fixed
+            //   goal coordinate.
             // ============================================================
             double lightPosition = LIGHT_TAG_NOT_SEEN;
             boolean tagCentered = false;
+            boolean tagVisibleThisLoop = false;
             if (ptoEngaged) {
                 lightPosition = LIGHT_PTO_ENGAGED;
             } else if (targetTag != null && targetTag.ftcPose != null) {
@@ -755,10 +887,30 @@ public class ApolloDrive extends LinearOpMode {
                 } else {
                     lightPosition = LIGHT_TAG_RIGHT;
                 }
-                // Record camera-measured distance (telemetry only).
+                // Record camera-measured distance (drives the flywheel chart).
                 tagDistanceInches = targetTag.ftcPose.range;
+                tagVisibleThisLoop = true;
             }
             light.setPosition(lightPosition);
+
+            // ============================================================
+            //   FLYWHEEL DISTANCE CHART  (auto-set flywheelSpeedManual)
+            //   When a tag is visible, flywheelSpeedManual is set from
+            //   whichever chart matches the measured distance:
+            //     distance <  76.5 in -> NEAR chart (table interpolation,
+            //                            clamped to 0.75 below 29.7 in).
+            //     distance >= 76.5 in -> FAR chart (linear, +0.005/in,
+            //                            clamped to a max of 1.0).
+            //   With no tag the chart does not apply and the G2 dpad manual
+            //   value is held.
+            // ============================================================
+            if (tagVisibleThisLoop) {
+                if (tagDistanceInches < FLYWHEEL_CHART_MAX_DISTANCE) {
+                    flywheelSpeedManual = flywheelPowerForDistance(tagDistanceInches);
+                } else {
+                    flywheelSpeedManual = flywheelPowerForDistanceFar(tagDistanceInches);
+                }
+            }
 
             // ============================================================
             //   TURRET CONTROL  (autopilot or manual)
@@ -791,12 +943,112 @@ public class ApolloDrive extends LinearOpMode {
                         double ry = odo.getPosY(DistanceUnit.INCH);
                         double rHeading = odo.getHeading(AngleUnit.RADIANS);
 
+                        // ====================================================
+                        //   CAMERA POSE CORRECTION (stationary only)
+                        //   Use the camera's view of the known-position goal
+                        //   to correct Pinpoint X/Y drift. Heading is left
+                        //   untouched. The turret aim below then uses the
+                        //   corrected pose. Skipped entirely if the robot is
+                        //   moving, the tag is not seen, the tag is too far
+                        //   off-center, or the implied jump is too large.
+                        // ====================================================
+                        boolean robotMoving =
+                                Math.abs(gamepad1.left_stick_x)  > CAM_STATIONARY_STICK_DEADBAND ||
+                                        Math.abs(gamepad1.left_stick_y)  > CAM_STATIONARY_STICK_DEADBAND ||
+                                        Math.abs(gamepad1.right_stick_x) > CAM_STATIONARY_STICK_DEADBAND;
+
+                        camCorrectionAppliedLast = false; // reset each loop
+
+                        if (!robotMoving
+                                && targetTag != null && targetTag.ftcPose != null
+                                && Math.abs(targetTag.ftcPose.bearing)
+                                <= CAM_CORRECTION_MAX_BEARING_DEG) {
+
+                            // turretRelAngle: where the camera points relative
+                            // to the robot chassis. The camera is turret-
+                            // mounted, so this is essential to every step.
+                            double turretRelAngle = turretPosToRelAngle(turretPosition);
+
+                            // Horizontal distance + bearing to the tag.
+                            // ftcPose.x (right) / ftcPose.y (forward) are
+                            // GROUND-PLANE components in the camera frame, so
+                            // the 22.5 deg up-tilt does not matter here.
+                            double camX = targetTag.ftcPose.x;   // right of lens
+                            double camY = targetTag.ftcPose.y;   // forward of lens
+                            double horizRange = Math.hypot(camX, camY);
+                            // Bearing from the ground-plane components (radians,
+                            // +left). Using x/y avoids any tilt contamination
+                            // that the reported bearing field could carry.
+                            double bearing = Math.atan2(camX, camY);
+
+                            // (1) Field-frame direction FROM the lens TO the
+                            //     tag = camera pointing direction + bearing.
+                            //     Camera pointing dir = robotHeading
+                            //                         + turretRelAngle.
+                            double camPointDir = wrapAngle(rHeading + turretRelAngle);
+                            double lensToTagDir = wrapAngle(camPointDir
+                                    + TURRET_ODO_SIGN * bearing);
+
+                            // (2) Lens field position: the goal is the tag, so
+                            //     the lens is horizRange back along that dir.
+                            double lensX = getGoalFieldX() - horizRange * Math.cos(lensToTagDir);
+                            double lensY = getGoalFieldY() - horizRange * Math.sin(lensToTagDir);
+
+                            // (3) Turret axis: the lens is CAM_LEVER_INCHES out
+                            //     from the turret axis, along the camera
+                            //     pointing direction (+ mount clocking). This
+                            //     lever rotates with robotHeading+turretRelAngle.
+                            double leverDir = wrapAngle(camPointDir + CAM_MOUNT_ANGLE_RAD);
+                            double axisX = lensX - CAM_LEVER_INCHES * Math.cos(leverDir);
+                            double axisY = lensY - CAM_LEVER_INCHES * Math.sin(leverDir);
+
+                            // (4) Robot odometry point: offset from the turret
+                            //     axis by the FIXED robot-frame vector
+                            //     (AXIS_TO_ODO_FWD, AXIS_TO_ODO_LEFT), which
+                            //     rotates with robotHeading only (NOT the
+                            //     turret). Rotating a robot-frame (fwd,left)
+                            //     vector into the field frame:
+                            //       fieldX += fwd*cos(H) - left*sin(H)
+                            //       fieldY += fwd*sin(H) + left*cos(H)
+                            double cH = Math.cos(rHeading);
+                            double sH = Math.sin(rHeading);
+                            double camRobotX = axisX
+                                    + AXIS_TO_ODO_FWD_INCHES  * cH
+                                    - AXIS_TO_ODO_LEFT_INCHES * sH;
+                            double camRobotY = axisY
+                                    + AXIS_TO_ODO_FWD_INCHES  * sH
+                                    + AXIS_TO_ODO_LEFT_INCHES * cH;
+
+                            // (5) Sanity clamp + gentle blend. Reject a frame
+                            //     that implies an unrealistic jump; otherwise
+                            //     nudge the odo pose a small fraction toward
+                            //     the camera estimate.
+                            double jump = Math.hypot(camRobotX - rx, camRobotY - ry);
+                            camCorrectionJumpLast = jump;
+                            if (jump <= CAM_CORRECTION_MAX_JUMP) {
+                                double newX = rx + CAM_CORRECTION_GAIN * (camRobotX - rx);
+                                double newY = ry + CAM_CORRECTION_GAIN * (camRobotY - ry);
+                                // Write corrected X/Y back to the Pinpoint via
+                                // setPosition, re-passing the CURRENT heading
+                                // so heading is left unchanged (only X/Y are
+                                // corrected). setPosition(Pose2D) is available
+                                // on all Pinpoint driver versions.
+                                odo.setPosition(new Pose2D(
+                                        DistanceUnit.INCH, newX, newY,
+                                        AngleUnit.RADIANS, rHeading));
+                                // Use the corrected values for this loop's aim.
+                                rx = newX;
+                                ry = newY;
+                                camCorrectionAppliedLast = true;
+                            }
+                        }
+
                         // Field-frame angle from the robot to the fixed goal.
                         // As the robot TRANSLATES, rx/ry change so this
                         // changes. As the robot ROTATES, subtracting rHeading
                         // counter-rotates the aim. One expression, both cases.
-                        double fieldAngle = Math.atan2(GOAL_FIELD_Y - ry,
-                                GOAL_FIELD_X - rx);
+                        double fieldAngle = Math.atan2(getGoalFieldY() - ry,
+                                getGoalFieldX() - rx);
                         double robotRelativeAngle = wrapAngle(fieldAngle - rHeading);
 
                         // TURRET_ODO_SIGN flips turret rotation direction only.
@@ -879,17 +1131,33 @@ public class ApolloDrive extends LinearOpMode {
             double turretRelDeg = Math.toDegrees(turretPosToRelAngle(turretPosition));
             telemetry.addData("Turret", turretMode);
             telemetry.addData("Field zeroed", fieldZeroed ? "YES" : "NO");
-            telemetry.addData("Tag " + TARGET_TAG_ID,
+            telemetry.addData("Tag " + getTargetTagId(),
                     targetTag != null ? "VISIBLE" : "NOT SEEN");
             telemetry.addData("Tag distance (in)",
                     tagDistanceInches >= 0 ? String.format("%.1f", tagDistanceInches)
                             : "not measured");
+            // Flywheel: show which chart (or manual) is driving the speed.
+            String flywheelSrc;
+            if (!tagVisibleThisLoop) {
+                flywheelSrc = "MANUAL (G2 dpad, no tag)";
+            } else if (tagDistanceInches < FLYWHEEL_CHART_MAX_DISTANCE) {
+                flywheelSrc = "NEAR CHART (by distance)";
+            } else {
+                flywheelSrc = "FAR CHART (by distance)";
+            }
+            telemetry.addData("Flywheel src", flywheelSrc);
+            telemetry.addData("Spinup req (s)", "%.2f", requiredSpinupSeconds());
             telemetry.addLine("=== LIVE READINGS ===");
             telemetry.addData("X (in)", "%.3f", xIn);
             telemetry.addData("Y (in)", "%.3f", yIn);
             telemetry.addData("Robot heading (deg)", "%.3f", headingDeg);
             telemetry.addData("Turret rel. angle (deg)", "%.1f", turretRelDeg);
             telemetry.addData("Turret pos (0-1)", "%.3f", turretPosition);
+            telemetry.addData("Cam correction",
+                    camCorrectionAppliedLast
+                            ? String.format("APPLIED (jump %.1f in)", camCorrectionJumpLast)
+                            : "idle");
+            telemetry.addData("speed", flywheelSpeedManual);
             telemetry.update();
         }
 
@@ -897,6 +1165,82 @@ public class ApolloDrive extends LinearOpMode {
         if (visionPortal != null) {
             visionPortal.close();
         }
+    }
+
+    // ============================================================
+    //   FLYWHEEL DISTANCE CHART LOOKUP
+    //   Linear interpolation of flywheelSpeedManual from the team chart.
+    //   Distance is clamped to the charted range: nearer than the closest
+    //   point uses that point's power; farther than the farthest point
+    //   uses that point's power. (Callers only invoke this when distance
+    //   <= FLYWHEEL_CHART_MAX_DISTANCE, so the far clamp is just a guard.)
+    // ============================================================
+    private double flywheelPowerForDistance(double distanceInches) {
+        int n = FLYWHEEL_CHART_DISTANCE.length;
+
+        // Find the min and max charted distance (the table is descending,
+        // but don't assume — scan for the true bounds).
+        int idxMin = 0, idxMax = 0;
+        for (int i = 1; i < n; i++) {
+            if (FLYWHEEL_CHART_DISTANCE[i] < FLYWHEEL_CHART_DISTANCE[idxMin]) idxMin = i;
+            if (FLYWHEEL_CHART_DISTANCE[i] > FLYWHEEL_CHART_DISTANCE[idxMax]) idxMax = i;
+        }
+
+        // Clamp outside the charted range.
+        if (distanceInches <= FLYWHEEL_CHART_DISTANCE[idxMin]) {
+            return FLYWHEEL_CHART_POWER[idxMin];
+        }
+        if (distanceInches >= FLYWHEEL_CHART_DISTANCE[idxMax]) {
+            return FLYWHEEL_CHART_POWER[idxMax];
+        }
+
+        // Find the charted pair that brackets this distance and interpolate.
+        // The table order doesn't matter: we look for any i, j whose
+        // distances straddle the query value.
+        double bestLoDist = -Double.MAX_VALUE, bestLoPow = 0;
+        double bestHiDist =  Double.MAX_VALUE, bestHiPow = 0;
+        for (int i = 0; i < n; i++) {
+            double d = FLYWHEEL_CHART_DISTANCE[i];
+            if (d <= distanceInches && d > bestLoDist) {
+                bestLoDist = d; bestLoPow = FLYWHEEL_CHART_POWER[i];
+            }
+            if (d >= distanceInches && d < bestHiDist) {
+                bestHiDist = d; bestHiPow = FLYWHEEL_CHART_POWER[i];
+            }
+        }
+        if (bestHiDist == bestLoDist) return bestLoPow; // exact charted hit
+        double t = (distanceInches - bestLoDist) / (bestHiDist - bestLoDist);
+        return bestLoPow + t * (bestHiPow - bestLoPow);
+    }
+
+    // ============================================================
+    //   FAR-REGIME FLYWHEEL POWER  (tag >= 76.5 in)
+    //   Linear model fitted to the measured far points
+    //   (118 in -> 0.95, 122 in -> 0.97, 128 in -> 1.00), which lie on a
+    //   straight line of slope FAR_SLOPE (+0.005 power per inch):
+    //       power = FAR_BASE_POWER + FAR_SLOPE * (distance - FAR_BASE_DIST)
+    //   The line is extrapolated across the whole far range. Coming nearer
+    //   than ~108 in it would exceed full power, so the result is clamped
+    //   to FAR_POWER_MAX (1.0). (Power is also floored at 0.0 as a guard.)
+    // ============================================================
+    private double flywheelPowerForDistanceFar(double distanceInches) {
+        double power = FAR_BASE_POWER
+                + FAR_SLOPE * (distanceInches - FAR_BASE_DIST);
+        if (power > FAR_POWER_MAX) power = FAR_POWER_MAX;
+        if (power < 0.0)           power = 0.0;
+        return power;
+    }
+
+    // ============================================================
+    //   REQUIRED FLYWHEEL SPIN-UP TIME (distance-dependent)
+    //   The blocker only opens after the flywheel has been running this
+    //   long. Far shots (tag at/over 76.5 in, or no tag at all) need the
+    //   longer 3.15 s spin-up; closer shots use 1.20 s.
+    // ============================================================
+    private double requiredSpinupSeconds() {
+        boolean far = (tagDistanceInches < 0)                       // no tag ever / not seen
+                || (tagDistanceInches >= FLYWHEEL_CHART_MAX_DISTANCE); // 76.5 in or beyond
+        return far ? BLOCKER_FLYWHEEL_SPINUP_FAR : BLOCKER_FLYWHEEL_SPINUP_NEAR;
     }
 
     // ============================================================
@@ -1032,6 +1376,8 @@ public class ApolloDrive extends LinearOpMode {
         // MANUAL mode means clearBulkCache() must be called once at the top
         // of every loop iteration (see runOpMode) — every sensor read after
         // that, until the next clear, is served from one cached snapshot.
+        // The swerve encoders get an additional fresh clear right before
+        // their reads — see the runModule calls in runOpMode.
         allHubs = hardwareMap.getAll(LynxModule.class);
         for (LynxModule hub : allHubs) {
             hub.setBulkCachingMode(LynxModule.BulkCachingMode.MANUAL);

@@ -2,6 +2,7 @@ package org.firstinspires.ftc.teamcode.Auto;
 
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
@@ -46,6 +47,7 @@ import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
  *   driveY(+) = LEFT    (assumed) — flip Y_DIRECTION_SIGN if it strafes right instead
  *   driveXY(dx, dy) uses the same Pinpoint axes
  */
+@Disabled
 @Autonomous(name = "fullyOmniAuto", group = "Swerve")
 public class fullyOmniAuto extends LinearOpMode {
 
