@@ -3,7 +3,6 @@ package org.firstinspires.ftc.teamcode.Auto;
 
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
-import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
@@ -22,9 +21,9 @@ import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
 import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 
 import java.util.List;
-@Disabled
-@Autonomous(name = "allmightyAuto", group = "Swerve")
-public class allmightyAuto extends LinearOpMode {
+
+@Autonomous(name = "redLessMightAuto", group = "Swerve")
+public class redLessMightAuto extends LinearOpMode {
 
     // ============================================================
     // HARDWARE
@@ -43,7 +42,7 @@ public class allmightyAuto extends LinearOpMode {
 
     private AprilTagProcessor aprilTagProcessor;
     private VisionPortal visionPortal;
-    private double turretStartPos = 0.71;
+    private double turretStartPos = 0.303;
 
     final int TARGET_TAG_ID = 20;
     final double LIGHT_TAG_NOT_SEEN  = 0.278;
@@ -63,7 +62,7 @@ public class allmightyAuto extends LinearOpMode {
     // ============================================================
     final double FRONT_LEFT_OFFSET  = 0.1200;
     final double FRONT_RIGHT_OFFSET = 1.3861;
-    final double BACK_LEFT_OFFSET   = 1.6965;
+    final double BACK_LEFT_OFFSET   = 1.9287;
     final double BACK_RIGHT_OFFSET  = 0.8225;
 
     // ============================================================
@@ -166,7 +165,7 @@ public class allmightyAuto extends LinearOpMode {
     private final ElapsedTime matchTimer = new ElapsedTime();
     final double MATCH_CUTOFF_SECONDS = 28.0;
 
-    final double FORWARD_COLLECT_FEET               = 3.5;
+    final double FORWARD_COLLECT_FEET               = 3;
     final double COLLECT_PUSH_FEET                  = 0.5;
     // Fraction of the full forward+push distance at which to turn the intake on.
     // 0.5 = halfway. Tune up/down as desired.
@@ -188,8 +187,8 @@ public class allmightyAuto extends LinearOpMode {
         blockerBlocked();
 
         // Hold turret in start position during init
-        leftTurret.setPosition(turretStartPos);
-        rightTurret.setPosition(turretStartPos);
+        //leftTurret.setPosition(turretStartPos);
+        //rightTurret.setPosition(turretStartPos);
 
         // Run camera + light logic while initialized (before start is pressed)
         while (!isStarted() && !isStopRequested()) {
@@ -200,8 +199,8 @@ public class allmightyAuto extends LinearOpMode {
             telemetry.addData("Battery", "%.2f V", voltageSensor.getVoltage());
 
             // Re-assert turret hold every loop
-            leftTurret.setPosition(turretStartPos);
-            rightTurret.setPosition(turretStartPos);
+            //leftTurret.setPosition(turretStartPos);
+            //rightTurret.setPosition(turretStartPos);
 
             telemetry.update();
         }
@@ -214,8 +213,8 @@ public class allmightyAuto extends LinearOpMode {
         matchTimer.reset();
 
         // Set turret to start position (kept in case anything moved it)
-        leftTurret.setPosition(turretStartPos);
-        rightTurret.setPosition(turretStartPos);
+       // leftTurret.setPosition(turretStartPos);
+        //rightTurret.setPosition(turretStartPos);
 
         // ====================================================
         // INITIAL LAUNCH — fire preloaded element
@@ -236,14 +235,14 @@ public class allmightyAuto extends LinearOpMode {
             //    runs until stall or full distance + grace window.
             collectCycleForward();
             stopIntake();
-            if (matchTimeUp()) break;
-
+            //if (matchTimeUp()) break;
+            break;
             // 2. Drive back to start; flywheels spin up immediately at start of return
-            driveBackToStartWithFlywheelSpinup(startX);
-            if (matchTimeUp()) break;
+            //driveBackToStartWithFlywheelSpinup(startX);
+            //if (matchTimeUp()) break;
 
             // 3. Launch sequence — only waits for REMAINDER of spinup time
-            launchSequence();
+            // launchSequence();
         }
 
         // ====================================================
@@ -408,10 +407,10 @@ public class allmightyAuto extends LinearOpMode {
             double error      = targetPos - currentPos;
 
             // --- Turn intake ON at INTAKE_ON_FRACTION of total distance ---
-            if (!intakeOn && Math.abs(traveled) >= intakeOnDistance) {
+            /*if (!intakeOn && Math.abs(traveled) >= intakeOnDistance) {
                 setIntakePower(INTAKE_FORWARD_POWER);
                 intakeOn = true;
-            }
+            }*/
 
             // --- Stall watch (only meaningful once intake is on) ---
             if (intakeOn) {
@@ -838,8 +837,8 @@ public class allmightyAuto extends LinearOpMode {
         light       = hardwareMap.get(Servo.class, "light");
 
         // Hold turret at start position immediately after binding it
-        leftTurret.setPosition(turretStartPos);
-        rightTurret.setPosition(turretStartPos);
+        //leftTurret.setPosition(turretStartPos);
+        //rightTurret.setPosition(turretStartPos);
 
         odo = hardwareMap.get(GoBildaPinpointDriver.class, "odo");
         odo.setOffsets(X_POD_OFFSET_MM, Y_POD_OFFSET_MM, DistanceUnit.MM);
@@ -942,7 +941,7 @@ public class allmightyAuto extends LinearOpMode {
     }
 
     public void startLauncher() {
-        double a = 1; //because launchercompensatedpower isn't enough
+        double a = 1;
         double power = launcherCompensatedPower() * a;
         leftFly.setPower(power);
         rightFly.setPower(power);

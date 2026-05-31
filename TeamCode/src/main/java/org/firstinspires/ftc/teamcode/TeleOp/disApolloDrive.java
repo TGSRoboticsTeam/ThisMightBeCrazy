@@ -1,6 +1,7 @@
 package org.firstinspires.ftc.teamcode.TeleOp;
 
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.AnalogInput;
@@ -12,35 +13,45 @@ import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
+import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
+import org.firstinspires.ftc.robotcore.external.hardware.camera.controls.ExposureControl;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit;
+import org.firstinspires.ftc.vision.VisionPortal;
+import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
+import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 
-@TeleOp(name = "ApolloDrive", group = "Swerve")
-public class ApolloDrive extends LinearOpMode {
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+@Disabled
+@TeleOp(name = "disApolloDrive", group = "Swerve")
+public class disApolloDrive extends LinearOpMode {
+
+    // ============================================================
+    //   PER-OPMODE CONFIG  (override these in a subclass)
+    //   The turret is now MANUAL-only; the only thing variants need to
+    //   change is which AprilTag they read for the distance-based flywheel
+    //   adjustment and the light indicator.
+    // ============================================================
+    protected int getTargetTagId() { return 20; }
 
     // --- 1. HARDWARE DECLARATIONS ---
-    // Drive motors are DcMotorEx so we can read per-motor current draw.
-    // NOTE: the back-left pod has a steer servo + encoder (so it actively
-    // points along the swerve angle) but NO drive motor — it steers but never
-    // drives.
-    private DcMotorEx frontLeftDrive, frontRightDrive, backRightDrive;
+    private DcMotor frontLeftDrive, frontRightDrive, backLeftDrive, backRightDrive;
     private CRServo frontLeftSteer, frontRightSteer, backLeftSteer, backRightSteer;
     private AnalogInput frontLeftEncoder, frontRightEncoder, backLeftEncoder, backRightEncoder;
     private IMU imu;
     private VoltageSensor voltageSensor;
 
-    // All REV hubs, captured once so telemetry can report each hub's total
-    // current draw without re-querying the hardware map every loop.
-    private java.util.List<com.qualcomm.hardware.lynx.LynxModule> allHubs;
-
     // --- MECHANISM MOTORS ---
-    // Intake motors are DcMotorEx so we can read per-motor current for stall
-    // detection; flywheels are DcMotorEx too for current telemetry.
+    // Intake motors are DcMotorEx so we can read per-motor current for stall detection.
     private DcMotorEx topIntake, bottomIntake;
-    private DcMotorEx leftFly, rightFly;
+    private DcMotor leftFly, rightFly;
 
     // --- BLOCKER SERVO ---
     private Servo blocker;
+
+    // --- LIGHT SERVO (AprilTag status indicator) ---
+    private Servo light;
 
     // --- PTO SERVO ---
     private Servo pto;
@@ -48,9 +59,88 @@ public class ApolloDrive extends LinearOpMode {
     private boolean ptoDpadUpPreviouslyPressed   = false;
     private boolean ptoDpadDownPreviouslyPressed = false;
 
-    // Trigger threshold for the G2 right-trigger "fine step" on the flywheel
-    // manual speed adjust.
-    final double G2_RT_THRESHOLD = 0.5;
+    // --- TURRET SERVOS (MANUAL ONLY) ---
+    private Servo leftTurret, rightTurret;
+    private double turretPosition = 0.5;
+    final double TURRET_DEADBAND = 0.05;
+
+    // --- TURRET MANUAL MODE (G2 left stick X) ---
+    // Three speeds: LT held = fast, RT held = slow, neither = normal.
+    // If both triggers are held, LT (fast) wins.
+    final double TURRET_SPEED_MANUAL = 0.016; // normal manual speed
+    final double TURRET_SPEED_SLOW   = 0.008; // RT held — fine control
+    final double TURRET_SPEED_FAST   = 0.032; // LT held — fast slew
+    final double TURRET_RT_THRESHOLD = 0.5;
+    final double TURRET_LT_THRESHOLD = 0.5;
+
+    // --- TURRET ANGLE CALIBRATION (telemetry readout only) ---
+    // turretPosition is a raw servo value. The turret-relative camera angle is:
+    //     turretRelAngle = (turretPosition - 0.5) * 2*PI + TURRET_ANGLE_OFFSET
+    // TURRET_ANGLE_OFFSET (radians) corrects for the camera NOT pointing
+    // straight robot-forward when turretPosition == 0.5. Used only for the
+    // "Turret rel. angle" telemetry line now that aiming is manual.
+    final double TURRET_ANGLE_OFFSET = 0.0;
+
+    // Last camera-measured straight-line distance to the tag (inches).
+    // Drives the flywheel distance chart. -1 until first seen.
+    private double tagDistanceInches = -1.0;
+
+    // --- VISION (AprilTag) ---
+    private VisionPortal visionPortal;
+    private AprilTagProcessor aprilTagProcessor;
+
+    // --- CAMERA EXPOSURE (G2 dpad_right = +, G2 dpad_left = -) ---
+    // Exposure can only be touched once the camera is actually STREAMING, so
+    // it's set up lazily on the first loop where that's true: the camera is
+    // switched to MANUAL exposure and the current value is captured. Each
+    // dpad tap then nudges it by EXPOSURE_STEP_MS, clamped to the camera's
+    // reported min/max. Lower exposure = less motion blur (better AprilTag
+    // detection while moving); higher = brighter in dim lighting.
+    private ExposureControl exposureControl;
+    private boolean exposureInitialized = false;
+    private long exposureMs    = 0;
+    private long exposureMinMs = 1;
+    private long exposureMaxMs = 1;
+    private boolean g2DpadRightPrev = false;
+    private boolean g2DpadLeftPrev  = false;
+    final long EXPOSURE_STEP_MS = 1; // ms per dpad tap
+
+    // ============================================================
+    //   FLYWHEEL DISTANCE -> POWER CHARTS  (two separate regimes)
+    // ============================================================
+    // The flywheel has TWO distinct charts, one per spin-up regime. They
+    // are NOT one continuous curve and must not be connected — each is
+    // valid only within its own distance band and its own spin-up time.
+    //
+    //   NEAR regime  (tag <  76.5 in): NEAR chart, 1.20 s spin-up.
+    //   FAR  regime  (tag >= 76.5 in): FAR  chart, 3.15 s spin-up.
+    //
+    // When a tag is visible, flywheelSpeedManual is interpolated from
+    // whichever chart matches the measured distance. With no tag, the
+    // chart does not apply and the G2 dpad manual value is held.
+    //
+    // --- NEAR chart (tag < 76.5 in) ---
+    //   distance < 29.7 in : clamped to the 29.7 in power (0.75).
+    final double[] FLYWHEEL_CHART_DISTANCE = {
+            76.4, 71.4, 65.8, 60.5, 55.5, 50.1, 44.8, 40.0, 35.0, 29.7
+    };
+    final double[] FLYWHEEL_CHART_POWER = {
+            1.000, 0.975, 0.950, 0.910, 0.875, 0.850, 0.830, 0.815, 0.800, 0.750
+    };
+    // Boundary between the near and far regimes.
+    final double FLYWHEEL_CHART_MAX_DISTANCE = 76.5; // inches
+
+    // --- FAR chart (tag >= 76.5 in) ---
+    // Measured points: 118 in -> 0.95, 122 in -> 0.97, 128 in -> 1.00.
+    // These lie on a straight line of slope +0.005 power per inch:
+    //     power = FAR_BASE_POWER + FAR_SLOPE * (distance - FAR_BASE_DIST)
+    // The line is extrapolated across the WHOLE far range (76.5 in and
+    // up), then clamped to a maximum of 1.0 — coming closer than ~108 in
+    // the line would exceed full power, so it saturates at 1.0.
+    final double FAR_BASE_DIST   = 128.0; // reference point distance (in)
+    final double FAR_BASE_POWER  = 1.000; // power at FAR_BASE_DIST
+    final double FAR_SLOPE       = 0.005; // power per inch (+ = farther needs more)
+    final double FAR_POWER_MAX   = 1.000; // clamp ceiling
 
 
     // ============================================================
@@ -63,6 +153,14 @@ public class ApolloDrive extends LinearOpMode {
     // to BLOCKED this many seconds later. Pressing B cancels the timer.
     final double BLOCKER_AUTO_RETURN_SECONDS = 2.0;
 
+    // Light servo positions (AprilTag status indicator)
+    final double LIGHT_TAG_NOT_SEEN  = 0.278;  // no tag detected
+    final double LIGHT_TAG_LEFT      = 0.388;  // tag detected, off to the LEFT
+    final double LIGHT_TAG_RIGHT     = 0.555;  // tag detected, off to the RIGHT
+    final double LIGHT_TAG_CENTERED  = 0.480;  // tag detected and centered (<2 deg bearing)
+    final double LIGHT_CENTERED_BEARING_DEG = 2.0;
+    final double LIGHT_PTO_ENGAGED   = 0.002;    // PTO engaged — overrides tag states
+
     final double PTO_DISENGAGED = 0.8;
     final double PTO_ENGAGED    = 0.5;
     // ============================================================
@@ -74,7 +172,7 @@ public class ApolloDrive extends LinearOpMode {
 
     final double FRONT_LEFT_OFFSET  = 0.1200;
     final double FRONT_RIGHT_OFFSET = 1.3861;
-    final double BACK_LEFT_OFFSET   = 6.07128; // steer-only pod (no drive motor)
+    final double BACK_LEFT_OFFSET   = 1.6965;
     final double BACK_RIGHT_OFFSET  = 0.8225;
 
     // --- 4. TUNING PARAMETERS ---
@@ -154,33 +252,38 @@ public class ApolloDrive extends LinearOpMode {
     private boolean blockerAutoReturnArmed = false;
     private ElapsedTime blockerAutoReturnTimer = new ElapsedTime();
 
-    // Blocker-launch sequence: A (far) / X (close) register a pending-open
-    // request. The blocker only actually opens once the flywheel has been
-    // running continuously for the required spin-up time (set by the launch
-    // regime — see OVERRIDE_SPINUP_FAR / OVERRIDE_SPINUP_NEAR below). After it
-    // opens, the intake is forced to full power (the toggle speed) once
-    // BLOCKER_LAUNCH_INTAKE_DELAY has elapsed. Closing the blocker cuts intake
-    // AND flywheel.
-    // BLOCKER_FLYWHEEL_SPINUP_FAR is the fallback spin-up used only when no
-    // launch regime is active (edge case, e.g. Y pressed mid-spin-up).
-    final double BLOCKER_FLYWHEEL_SPINUP_FAR  = 3.15; // fallback spin-up
+    // Blocker-launch sequence: G1 A registers a pending-open request. The
+    // blocker only actually opens once the flywheel has been running
+    // continuously for the required spin-up time. After it opens, the
+    // intake is forced to full power (the toggle speed) once
+    // BLOCKER_LAUNCH_INTAKE_DELAY has elapsed. Closing the blocker cuts
+    // intake AND flywheel.
+    //
+    // SPIN-UP TIME IS DISTANCE-DEPENDENT:
+    //   - tag at/over FLYWHEEL_CHART_MAX_DISTANCE (76.5 in), or no tag:
+    //         BLOCKER_FLYWHEEL_SPINUP_FAR  (3.15 s) — longer spin-up.
+    //   - tag closer than that:
+    //         BLOCKER_FLYWHEEL_SPINUP_NEAR (1.20 s).
+    // The required time is recomputed each loop from the live tag distance.
+    final double BLOCKER_FLYWHEEL_SPINUP_NEAR = 1.20; // tag < 76.5 in
+    final double BLOCKER_FLYWHEEL_SPINUP_FAR  = 3.15; // tag >= 76.5 in or no tag
     final double BLOCKER_LAUNCH_INTAKE_DELAY  = 0.4;  // intake delay after blocker opens
 
-    // --- FLYWHEEL FULL-POWER LAUNCH OVERRIDE  (G1 A = far, X = close) ---
-    // The launch buttons engage a full-power (1.0) override that ALSO forces
-    // the blocker spin-up time. Both launch at full power, differing only in
-    // spin-up time:
-    //     A -> far   : OVERRIDE_SPINUP_FAR  (3.35 s)
-    //     X -> close : OVERRIDE_SPINUP_NEAR (1.5 s)
+    // --- FLYWHEEL FULL-POWER OVERRIDE  (G1 dpad_right) ---
+    // dpad_right engages a full-power (1.0) override that ALSO forces the
+    // blocker spin-up time. It has two states it toggles between, both at
+    // full power, differing only in spin-up time:
+    //     OVERRIDE_SPINUP_FAR  (3.35 s)  <-- engaged here on the first press
+    //     OVERRIDE_SPINUP_NEAR (1.5 s)
     // The override starts OFF so the distance chart / G2 manual value govern
-    // until a launch button is pressed. While active it overrides the distance
-    // chart and the G2 manual speed entirely. G1 Y switches the override back
-    // OFF, re-enabling the auto adjustment (stand-down). g1DpadRightPrev tracks
-    // the dpad_right edge used for the blocker manual toggle.
-    final double OVERRIDE_SPINUP_FAR  = 3.35; // A "far"   launch spin-up
-    final double OVERRIDE_SPINUP_NEAR = 1.5;  // X "close" launch spin-up
-    private boolean flywheelOverrideActive = false; // false until a launch button is pressed
-    private boolean flywheelOverrideFar    = true;  // true = far/3.35 s, false = close/1.5 s
+    // until the driver opts in. The first dpad_right press engages it at the
+    // 3.35 s state; each subsequent press flips 3.35 s <-> 1.5 s. While active
+    // it overrides the distance chart and the G2 manual speed entirely.
+    // G1 Y switches the override back OFF, re-enabling the auto adjustment.
+    final double OVERRIDE_SPINUP_FAR  = 3.35; // dpad_right "far"  state
+    final double OVERRIDE_SPINUP_NEAR = 1.5;  // dpad_right "near" state
+    private boolean flywheelOverrideActive = false; // false until first dpad_right press
+    private boolean flywheelOverrideFar    = true;  // true = 3.35 s, false = 1.5 s
     private boolean g1DpadRightPrev        = false;
     private boolean blockerOpenPending = false;      // A pressed, waiting for flywheel spin-up
     private boolean blockerLaunchMode  = false;      // true between blocker-open and close
@@ -209,10 +312,18 @@ public class ApolloDrive extends LinearOpMode {
     private boolean robotCentric = false;
     private boolean driveModeTogglePrev = false; // rising-edge tracker for LB+dpad_up
 
+    // --- BACK-LEFT CASTER (G1 RB + X held) ---
+    // While RB + X are held, the back-left module is released: its drive motor
+    // is switched to FLOAT (coast) and commanded 0, and its steer servo is
+    // commanded 0, so the wheel free-rolls and free-swivels like a caster.
+    // backLeftCoasting tracks the drive motor's zero-power mode so we only send
+    // a setZeroPowerBehavior command on transitions (not every loop).
+    private boolean backLeftCoasting = false;
 
     @Override
     public void runOpMode() {
         initializeHardware();
+        initializeVision();
 
         // No servo commands during init — servos hold their power-on position
         // until the main loop runs after start. Match-start positioning happens
@@ -235,6 +346,9 @@ public class ApolloDrive extends LinearOpMode {
                 blocker.setPosition(BLOCKER_BLOCKED_POSITION);
                 blockerOpen = false;
                 pto.setPosition(PTO_DISENGAGED);
+                leftTurret.setPosition(turretPosition);
+                rightTurret.setPosition(turretPosition);
+                light.setPosition(LIGHT_TAG_NOT_SEEN);
                 servosInitialized = true;
             }
 
@@ -274,7 +388,7 @@ public class ApolloDrive extends LinearOpMode {
             //   and within range) it overwrites flywheelSpeedManual each loop,
             //   so this manual adjust only takes effect at long range / no tag.
             // ============================================================
-            boolean g2RtHeld      = gamepad2.right_trigger > G2_RT_THRESHOLD;
+            boolean g2RtHeld      = gamepad2.right_trigger > TURRET_RT_THRESHOLD;
             double  flywheelStep  = g2RtHeld ? FLYWHEEL_SPEED_STEP_FINE
                     : FLYWHEEL_SPEED_STEP_COARSE;
             boolean g2DpadUpNow   = gamepad2.dpad_up;
@@ -292,29 +406,76 @@ public class ApolloDrive extends LinearOpMode {
             g2DpadDownPrev = g2DpadDownNow;
 
             // ============================================================
-            //   DPAD_RIGHT EDGE (G1) — used for the blocker manual toggle
-            //   The launch power/spin-up is now chosen by the A (far) and X
-            //   (close) launch buttons; dpad_right's job is the blocker toggle,
-            //   handled down in the blocker section. We compute its rising edge
-            //   here (and update prev every loop, even during PTO, so releasing
-            //   it across a PTO transition can't cause a spurious toggle) and
-            //   consume it below via dpadRightRising.
+            //   FLYWHEEL FULL-POWER OVERRIDE TOGGLE  (G1 dpad_right, rising edge)
+            //   First press engages the override at the 3.35 s state. Each
+            //   later press flips 3.35 s <-> 1.5 s. Always full power once
+            //   engaged. G1 Y switches it back off (see below), restoring the
+            //   distance chart and the G2 manual speed. The forced power is
+            //   applied after the distance-chart block below, and the spin-up
+            //   time is read by requiredSpinupSeconds(). Processed regardless
+            //   of PTO (it only affects the flywheel, which is frozen during
+            //   PTO anyway).
             // ============================================================
-            boolean g1DpadRightNow  = gamepad1.dpad_right;
-            boolean dpadRightRising = g1DpadRightNow && !g1DpadRightPrev;
+            boolean g1DpadRightNow = gamepad1.dpad_right;
+            if (g1DpadRightNow && !g1DpadRightPrev) {
+                if (!flywheelOverrideActive) {
+                    flywheelOverrideActive = true;
+                    flywheelOverrideFar    = true;  // engage at 3.35 s
+                } else {
+                    flywheelOverrideFar = !flywheelOverrideFar; // 3.35 s <-> 1.5 s
+                }
+            }
             g1DpadRightPrev = g1DpadRightNow;
 
             // ============================================================
             //   RE-ENABLE AUTO ADJUSTMENT  (G1 Y)
-            //   Turns the full-power launch override OFF, handing flywheel speed
-            //   and spin-up time back to the distance chart / G2 manual value
-            //   (e.g. to stand down after a launch). Idempotent (a held Y just
-            //   keeps it off), so no edge tracking is needed. Processed
-            //   regardless of PTO.
+            //   Turns the full-power override OFF, handing flywheel speed and
+            //   spin-up time back to the distance chart / G2 manual value.
+            //   Idempotent (a held Y just keeps it off), so no edge tracking
+            //   is needed. Processed regardless of PTO, like the dpad_right
+            //   toggle above.
             // ============================================================
             if (gamepad1.y) {
                 flywheelOverrideActive = false;
             }
+
+            // ============================================================
+            //   CAMERA EXPOSURE ADJUST  (G2 dpad_right = +, dpad_left = -)
+            //   Lazily switches the camera to MANUAL exposure the first loop
+            //   it is STREAMING, then each dpad tap nudges exposure by
+            //   EXPOSURE_STEP_MS, clamped to the camera's reported range.
+            // ============================================================
+            if (!exposureInitialized
+                    && visionPortal != null
+                    && visionPortal.getCameraState() == VisionPortal.CameraState.STREAMING) {
+                exposureControl = visionPortal.getCameraControl(ExposureControl.class);
+                if (exposureControl != null) {
+                    if (exposureControl.getMode() != ExposureControl.Mode.Manual) {
+                        exposureControl.setMode(ExposureControl.Mode.Manual);
+                    }
+                    exposureMinMs = Math.max(1, exposureControl.getMinExposure(TimeUnit.MILLISECONDS));
+                    exposureMaxMs = exposureControl.getMaxExposure(TimeUnit.MILLISECONDS);
+                    exposureMs    = exposureControl.getExposure(TimeUnit.MILLISECONDS);
+                    if (exposureMs < exposureMinMs) exposureMs = exposureMinMs;
+                    if (exposureMs > exposureMaxMs) exposureMs = exposureMaxMs;
+                }
+                exposureInitialized = true;
+            }
+
+            boolean g2DpadRightNow = gamepad2.dpad_right;
+            boolean g2DpadLeftNow  = gamepad2.dpad_left;
+            if (exposureControl != null) {
+                if (g2DpadRightNow && !g2DpadRightPrev) {
+                    exposureMs = Math.min(exposureMaxMs, exposureMs + EXPOSURE_STEP_MS);
+                    exposureControl.setExposure(exposureMs, TimeUnit.MILLISECONDS);
+                }
+                if (g2DpadLeftNow && !g2DpadLeftPrev) {
+                    exposureMs = Math.max(exposureMinMs, exposureMs - EXPOSURE_STEP_MS);
+                    exposureControl.setExposure(exposureMs, TimeUnit.MILLISECONDS);
+                }
+            }
+            g2DpadRightPrev = g2DpadRightNow;
+            g2DpadLeftPrev  = g2DpadLeftNow;
 
             // ============================================================
             //   DRIVE MODE TOGGLE  (G1 LB + dpad_up, rising edge)
@@ -351,7 +512,7 @@ public class ApolloDrive extends LinearOpMode {
             //     Both triggers held simultaneously → intakes run backward
             //     Anything else → intakes stop
             //     All other mechanisms are frozen (no trigger/button changes
-            //     processed for flywheel or blocker)
+            //     processed for flywheel, blocker, turret)
             //     Current-based stall detection is NOT active here.
             //
             //   PTO INACTIVE:
@@ -506,54 +667,39 @@ public class ApolloDrive extends LinearOpMode {
                 leftTriggerPreviouslyPressed = leftTriggerCurrentlyPressed;
 
                 // --------------------------------------------------------
-                //   LAUNCH  (A = far, X = close)  +  BLOCKER (B = close)
-                //   A and X are one-press launch buttons. Both force the
-                //   flywheel to FULL power and register a launch; they differ
-                //   only in spin-up time:
-                //       A -> "far"   : full power, 3.35 s spin-up
-                //       X -> "close" : full power, 1.5 s spin-up
-                //   On press they engage the full-power override (read below
-                //   as flywheelSpeedManual = 1.0) and set the spin-up regime
-                //   used by requiredSpinupSeconds(), spin the flywheel up if it
-                //   was off, and set blockerOpenPending. The blocker then opens
-                //   automatically once the flywheel has run for that spin-up
-                //   time (immediately if already met). The left trigger still
-                //   toggles the flywheel on/off independently; G1 Y stands the
-                //   override back down to the auto chart.
+                //   BLOCKER  (A = launch, B = blocked)
+                //   G1 A is a one-press launch button:
+                //     - flywheels OFF -> spin them up AND register the launch.
+                //       The blocker opens automatically once the flywheel has
+                //       run for the required spin-up time.
+                //     - flywheels ON  -> register the launch; blocker opens once
+                //       the spin-up gate is met (immediately if already met).
+                //   Either way, a single A press takes it all the way to launch.
+                //   The left trigger still toggles flywheels on/off independently.
                 //   G1 B moves to BLOCKED, cancels everything, cuts mechanisms.
+                //
+                //   The required spin-up time depends on tag distance: see
+                //   requiredSpinupSeconds() — 3.15 s at/over 76.5 in (or no
+                //   tag), 1.20 s closer in.
                 // --------------------------------------------------------
                 boolean aButtonCurrentlyPressed = gamepad1.a;
                 boolean bButtonCurrentlyPressed = gamepad1.b;
 
                 if (aButtonCurrentlyPressed && !aButtonPreviouslyPressed) {
-                    // LAUNCH FAR: full power, 3.35 s spin-up.
-                    flywheelOverrideActive = true;
-                    flywheelOverrideFar    = true;
                     if (!flywheelRunning) {
+                        // Flywheels off — A spins them up...
                         flywheelRampingDown = false;
                         flywheelRunning     = true;
                         flywheelOnTimer.reset();
                     }
+                    // ...and registers the launch. The blocker open is gated on
+                    // the spin-up time below, so one press goes cold -> launch.
                     blockerOpenPending = true;
                 }
-
-                boolean xButtonCurrentlyPressed = gamepad1.x;
-                if (xButtonCurrentlyPressed && !xButtonPreviouslyPressed) {
-                    // LAUNCH CLOSE: full power, 1.5 s spin-up.
-                    flywheelOverrideActive = true;
-                    flywheelOverrideFar    = false;
-                    if (!flywheelRunning) {
-                        flywheelRampingDown = false;
-                        flywheelRunning     = true;
-                        flywheelOnTimer.reset();
-                    }
-                    blockerOpenPending = true;
-                }
-                xButtonPreviouslyPressed = xButtonCurrentlyPressed;
 
                 // Open the blocker once the flywheel spin-up gate is satisfied:
                 // flywheel must be running NOW and have been for at least the
-                // required spin-up time (3.35 s far / 1.5 s close).
+                // distance-dependent required spin-up time.
                 if (blockerOpenPending
                         && flywheelRunning
                         && flywheelOnTimer.seconds() >= requiredSpinupSeconds()) {
@@ -583,15 +729,19 @@ public class ApolloDrive extends LinearOpMode {
                 }
 
                 // --------------------------------------------------------
-                //   BLOCKER MANUAL TOGGLE  (G1 dpad_right)
+                //   BLOCKER MANUAL TOGGLE  (G1 X, RB not held)
                 //   Flips the blocker open <-> closed directly, ignoring the
                 //   flywheel spin-up gate. Opening this way is a plain manual
-                //   hold — no auto-return, so it stays open until toggled
-                //   closed. Closing cancels any pending open / auto-return and,
-                //   if a launch sequence was active, cuts intake + flywheel
-                //   (same as B). Uses the dpad_right rising edge computed above.
+                //   hold — no auto-return, so it stays open until X closes it.
+                //   Closing cancels any pending open / auto-return and, if a
+                //   launch sequence was active, cuts intake + flywheel (same as B).
+                //   Gated on !rbHeld so the RB+X back-left caster combo does NOT
+                //   also toggle the blocker. xButtonPreviouslyPressed still
+                //   tracks the raw button so releasing RB while holding X can't
+                //   produce a spurious toggle.
                 // --------------------------------------------------------
-                if (dpadRightRising) {
+                boolean xButtonCurrentlyPressed = gamepad1.x;
+                if (xButtonCurrentlyPressed && !xButtonPreviouslyPressed && !rbHeld) {
                     if (blockerOpen) {
                         blocker.setPosition(BLOCKER_BLOCKED_POSITION);
                         blockerOpen            = false;
@@ -605,9 +755,10 @@ public class ApolloDrive extends LinearOpMode {
                         blocker.setPosition(BLOCKER_LAUNCH_POSITION);
                         blockerOpen            = true;
                         blockerOpenPending     = false;
-                        blockerAutoReturnArmed = false; // manual open holds until toggled closed
+                        blockerAutoReturnArmed = false; // manual open holds until X closes it
                     }
                 }
+                xButtonPreviouslyPressed = xButtonCurrentlyPressed;
 
                 // Auto-return: once 2s have elapsed since the blocker opened,
                 // send it back to BLOCKED and disarm. This also ends launch
@@ -732,86 +883,269 @@ public class ApolloDrive extends LinearOpMode {
 
             ModuleDebug fl = runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  speedFrontLeft,  targetAngleFL, "FL");
             ModuleDebug fr = runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, speedFrontRight, targetAngleFR, "FR");
-            // Back-left pod STEERS to the swerve angle (servo + encoder) but has
-            // no drive motor, so it is commanded with a null motor and speed 0:
-            // it points the right way and free-rolls, never driving.
-            ModuleDebug bl = runModule(null, backLeftSteer, backLeftEncoder, BACK_LEFT_OFFSET, 0.0, targetAngleBL, "BL");
+
+            // BACK-LEFT CASTER: RB + X held releases the back-left module so it
+            // free-rolls (drive coasts on FLOAT) and free-swivels (steer power
+            // 0). Otherwise it runs as a normal swerve module. The drive
+            // motor's zero-power mode is only changed on transitions.
+            boolean backLeftCaster = rbHeld && gamepad1.x;
+            ModuleDebug bl;
+            if (backLeftCaster) {
+                if (!backLeftCoasting) {
+                    backLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+                    backLeftCoasting = true;
+                }
+                backLeftDrive.setPower(0.0);  // FLOAT + 0 power => wheel coasts
+                backLeftSteer.setPower(0.0);  // no steering hold => free swivel
+                bl = null;
+            } else {
+                if (backLeftCoasting) {
+                    backLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+                    backLeftCoasting = false;
+                }
+                bl = runModule(backLeftDrive, backLeftSteer, backLeftEncoder, BACK_LEFT_OFFSET, speedBackLeft, targetAngleBL, "BL");
+            }
+
             ModuleDebug br = runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  speedBackRight,  targetAngleBR, "BR");
 
-            // Full-power launch override (G1 A=far / X=close) wins over BOTH the
-            // distance chart and the G2 manual value. Applied last so nothing
-            // above can undo it. Takes effect on the next loop's flywheel-power
-            // compute, matching the chart's one-loop latency.
+            // ============================================================
+            //   APRILTAG DETECTION (target tag, see getTargetTagId())
+            // ============================================================
+            AprilTagDetection targetTag = null;
+            List<AprilTagDetection> currentDetections = aprilTagProcessor.getDetections();
+            for (AprilTagDetection detection : currentDetections) {
+                if (detection.id == getTargetTagId()) {
+                    targetTag = detection;
+                    break;
+                }
+            }
+
+            // ============================================================
+            //   LIGHT SERVO + TAG DISTANCE (camera's only roles now)
+            //   PTO engaged    -> LIGHT_PTO_ENGAGED  (0.0)   — overrides all
+            //   not seen       -> LIGHT_TAG_NOT_SEEN (0.278)
+            //   seen, on LEFT  -> LIGHT_TAG_LEFT     (0.388)
+            //   seen, centered -> LIGHT_TAG_CENTERED (0.480)
+            //   seen, on RIGHT -> LIGHT_TAG_RIGHT    (0.555)
+            //   Camera is landscape, so side/centering use bearing only.
+            //   FTC convention: bearing > 0 = tag to the LEFT, < 0 = RIGHT.
+            //   The camera also records tagDistanceInches, which the flywheel
+            //   distance chart uses.
+            // ============================================================
+            double lightPosition = LIGHT_TAG_NOT_SEEN;
+            boolean tagCentered = false;
+            boolean tagVisibleThisLoop = false;
+            if (ptoEngaged) {
+                lightPosition = LIGHT_PTO_ENGAGED;
+            } else if (targetTag != null && targetTag.ftcPose != null) {
+                double bearing = targetTag.ftcPose.bearing;
+                tagCentered = Math.abs(bearing) <= LIGHT_CENTERED_BEARING_DEG;
+                if (tagCentered) {
+                    lightPosition = LIGHT_TAG_CENTERED;
+                } else if (bearing > 0) {
+                    lightPosition = LIGHT_TAG_LEFT;
+                } else {
+                    lightPosition = LIGHT_TAG_RIGHT;
+                }
+                // Record camera-measured distance (drives the flywheel chart).
+                tagDistanceInches = targetTag.ftcPose.range;
+                tagVisibleThisLoop = true;
+            }
+            light.setPosition(lightPosition);
+
+            // ============================================================
+            //   FLYWHEEL DISTANCE CHART  (auto-set flywheelSpeedManual)
+            //   When a tag is visible, flywheelSpeedManual is set from
+            //   whichever chart matches the measured distance:
+            //     distance <  76.5 in -> NEAR chart (table interpolation,
+            //                            clamped to 0.75 below 29.7 in).
+            //     distance >= 76.5 in -> FAR chart (linear, +0.005/in,
+            //                            clamped to a max of 1.0).
+            //   With no tag the chart does not apply and the G2 dpad manual
+            //   value is held.
+            // ============================================================
+            if (tagVisibleThisLoop) {
+                if (tagDistanceInches < FLYWHEEL_CHART_MAX_DISTANCE) {
+                    flywheelSpeedManual = flywheelPowerForDistance(tagDistanceInches);
+                } else {
+                    flywheelSpeedManual = flywheelPowerForDistanceFar(tagDistanceInches);
+                }
+            }
+
+            // Full-power override (G1 dpad_right) wins over BOTH the distance
+            // chart and the G2 manual value. Applied last so nothing above can
+            // undo it. Takes effect on the next loop's flywheel-power compute,
+            // matching the chart's one-loop latency.
             if (flywheelOverrideActive) {
                 flywheelSpeedManual = 1.0;
             }
 
             // ============================================================
-            //   TELEMETRY  (drive mode, PTO, blocker, flywheel, currents)
+            //   TURRET CONTROL  (MANUAL ONLY)
+            //   Frozen entirely while PTO is engaged (same as all other
+            //   mechanisms).
+            //
+            //   Manual: G2 left stick X (LT fast / RT slow). Snap presets
+            //     X -> 0.25, Y -> 0.5, B -> 0.75, A -> nearest of 0/1.
+            //
+            //   Position wraps 0<->1 (turret travels a full 360deg; the
+            //   servo range 0..1 is continuous; 0.5 = forward).
+            // ============================================================
+            if (!ptoEngaged) {
+                // Snap presets:
+                //   X -> 0.25  (left quarter)
+                //   Y -> 0.5   (forward / center)
+                //   B -> 0.75  (right quarter)
+                //   A -> 0.0 or 1.0, whichever is closer to current position
+                if (gamepad2.x) {
+                    turretPosition = 0.25;
+                } else if (gamepad2.y) {
+                    turretPosition = 0.5;
+                } else if (gamepad2.b) {
+                    turretPosition = 0.75;
+                } else if (gamepad2.a) {
+                    // Snap to whichever end (0 or 1) the turret is currently
+                    // closer to. Because the range wraps, 0 and 1 are the same
+                    // physical position — this just picks the neater servo value.
+                    turretPosition = (turretPosition <= 0.5) ? 0.0 : 1.0;
+                } else {
+                    double turretStick = gamepad2.left_stick_x;
+                    if (Math.abs(turretStick) > TURRET_DEADBAND) {
+                        // Speed select: LT held -> fast, RT held -> slow,
+                        // neither -> normal. LT wins if both are held.
+                        double turretSpeed;
+                        if (gamepad2.left_trigger > TURRET_LT_THRESHOLD) {
+                            turretSpeed = TURRET_SPEED_FAST;
+                        } else if (gamepad2.right_trigger > TURRET_RT_THRESHOLD) {
+                            turretSpeed = TURRET_SPEED_SLOW;
+                        } else {
+                            turretSpeed = TURRET_SPEED_MANUAL;
+                        }
+                        turretPosition = wrapUnit(turretPosition + turretStick * turretSpeed);
+                    }
+                }
+
+                leftTurret.setPosition(turretPosition);
+                rightTurret.setPosition(turretPosition);
+            }
+
+            // ============================================================
+            //   TELEMETRY  (drive mode, PTO, exposure, camera/tag, flywheel, light)
             // ============================================================
             telemetry.addData("Drive", robotCentric ? "ROBOT-CENTRIC" : "FIELD-CENTRIC");
             telemetry.addData("PTO", ptoEngaged ? "ENGAGED" : "DISENGAGED");
             telemetry.addData("Blocker", blockerOpen ? "OPEN" : "CLOSED");
+            telemetry.addData("CasterMode", backLeftCoasting);
+            telemetry.addData("Exposure (ms)",
+                    exposureControl != null
+                            ? String.format("%d  [%d..%d]", exposureMs, exposureMinMs, exposureMaxMs)
+                            : "camera not ready");
+            telemetry.addData("Tag " + getTargetTagId(),
+                    targetTag != null ? "SEEN" : "NOT SEEN");
+            telemetry.addData("Tag distance (in)",
+                    tagDistanceInches >= 0 ? String.format("%.1f", tagDistanceInches)
+                            : "not measured");
             // The flywheel speed that will actually be applied: override (full)
-            // when launching via A/X, else the G2 manual value. Voltage scaling
-            // is applied on top when running.
-            String flywheelSource = flywheelOverrideActive ? " (override)" : " (manual)";
+            // wins; else the distance-chart value when a tag is visible; else
+            // the G2 manual value. Voltage scaling is applied on top when running.
+            String flywheelSource = flywheelOverrideActive ? " (override)"
+                    : (tagVisibleThisLoop ? " (chart)" : " (manual)");
             telemetry.addData("Flywheel speed", "%.3f%s",
                     flywheelSpeedManual, flywheelSource);
-            telemetry.addData("FW launch (A=far X=close Y=auto)",
+            telemetry.addData("FW override (dpad_right / Y=auto)",
                     flywheelOverrideActive
                             ? (flywheelOverrideFar ? "FULL / 3.35s spin-up"
                             : "FULL / 1.5s spin-up")
-                            : "off (manual)");
-
-            // ============================================================
-            //   CURRENT DRAW (amps) — every motor + each hub total
-            //   Servos/CRServos cannot report per-device current, so only the
-            //   motors are listed individually; the hub totals capture the
-            //   whole-robot draw including servos.
-            // ============================================================
-            telemetry.addLine("--- Current draw (A) ---");
-            double iFL  = frontLeftDrive.getCurrent(CurrentUnit.AMPS);
-            double iFR  = frontRightDrive.getCurrent(CurrentUnit.AMPS);
-            double iBR  = backRightDrive.getCurrent(CurrentUnit.AMPS);
-            double iTop = topIntake.getCurrent(CurrentUnit.AMPS);
-            double iBot = bottomIntake.getCurrent(CurrentUnit.AMPS);
-            double iLF  = leftFly.getCurrent(CurrentUnit.AMPS);
-            double iRF  = rightFly.getCurrent(CurrentUnit.AMPS);
-            telemetry.addData("Drive FL/FR", "%.2f / %.2f", iFL, iFR);
-            telemetry.addData("Drive BR (BL=steer only, no drive)", "%.2f", iBR);
-            telemetry.addData("Intake top/bot", "%.2f / %.2f", iTop, iBot);
-            telemetry.addData("Flywheel L/R", "%.2f / %.2f", iLF, iRF);
-            telemetry.addData("Motors total", "%.2f",
-                    iFL + iFR + iBR + iTop + iBot + iLF + iRF);
-            if (allHubs != null) {
-                double hubTotal = 0.0;
-                for (int h = 0; h < allHubs.size(); h++) {
-                    double hubAmps = allHubs.get(h).getCurrent(CurrentUnit.AMPS);
-                    hubTotal += hubAmps;
-                    telemetry.addData("Hub " + h + " total", "%.2f", hubAmps);
-                }
-                telemetry.addData("All hubs total", "%.2f", hubTotal);
-            }
-            telemetry.addData("Battery (V)", "%.2f", voltageSensor.getVoltage());
-
+                            : "off (chart/manual)");
+            telemetry.addData("Light pos", "%.3f", lightPosition);
             telemetry.update();
+        }
+
+        // Clean up vision portal when opmode ends
+        if (visionPortal != null) {
+            visionPortal.close();
         }
     }
 
     // ============================================================
-    //   REQUIRED FLYWHEEL SPIN-UP TIME
-    //   The blocker only opens after the flywheel has run this long. When a
-    //   launch is active (A=far / X=close) the regime dictates it: 3.35 s far,
-    //   1.5 s close. Otherwise (no active launch — only reachable in edge
-    //   cases like pressing Y mid-spin-up) default to the longer/safer far
-    //   spin-up.
+    //   FLYWHEEL DISTANCE CHART LOOKUP
+    //   Linear interpolation of flywheelSpeedManual from the team chart.
+    //   Distance is clamped to the charted range: nearer than the closest
+    //   point uses that point's power; farther than the farthest point
+    //   uses that point's power. (Callers only invoke this when distance
+    //   <= FLYWHEEL_CHART_MAX_DISTANCE, so the far clamp is just a guard.)
+    // ============================================================
+    private double flywheelPowerForDistance(double distanceInches) {
+        int n = FLYWHEEL_CHART_DISTANCE.length;
+
+        // Find the min and max charted distance (the table is descending,
+        // but don't assume — scan for the true bounds).
+        int idxMin = 0, idxMax = 0;
+        for (int i = 1; i < n; i++) {
+            if (FLYWHEEL_CHART_DISTANCE[i] < FLYWHEEL_CHART_DISTANCE[idxMin]) idxMin = i;
+            if (FLYWHEEL_CHART_DISTANCE[i] > FLYWHEEL_CHART_DISTANCE[idxMax]) idxMax = i;
+        }
+
+        // Clamp outside the charted range.
+        if (distanceInches <= FLYWHEEL_CHART_DISTANCE[idxMin]) {
+            return FLYWHEEL_CHART_POWER[idxMin];
+        }
+        if (distanceInches >= FLYWHEEL_CHART_DISTANCE[idxMax]) {
+            return FLYWHEEL_CHART_POWER[idxMax];
+        }
+
+        // Find the charted pair that brackets this distance and interpolate.
+        // The table order doesn't matter: we look for any i, j whose
+        // distances straddle the query value.
+        double bestLoDist = -Double.MAX_VALUE, bestLoPow = 0;
+        double bestHiDist =  Double.MAX_VALUE, bestHiPow = 0;
+        for (int i = 0; i < n; i++) {
+            double d = FLYWHEEL_CHART_DISTANCE[i];
+            if (d <= distanceInches && d > bestLoDist) {
+                bestLoDist = d; bestLoPow = FLYWHEEL_CHART_POWER[i];
+            }
+            if (d >= distanceInches && d < bestHiDist) {
+                bestHiDist = d; bestHiPow = FLYWHEEL_CHART_POWER[i];
+            }
+        }
+        if (bestHiDist == bestLoDist) return bestLoPow; // exact charted hit
+        double t = (distanceInches - bestLoDist) / (bestHiDist - bestLoDist);
+        return bestLoPow + t * (bestHiPow - bestLoPow);
+    }
+
+    // ============================================================
+    //   FAR-REGIME FLYWHEEL POWER  (tag >= 76.5 in)
+    //   Linear model fitted to the measured far points
+    //   (118 in -> 0.95, 122 in -> 0.97, 128 in -> 1.00), which lie on a
+    //   straight line of slope FAR_SLOPE (+0.005 power per inch):
+    //       power = FAR_BASE_POWER + FAR_SLOPE * (distance - FAR_BASE_DIST)
+    //   The line is extrapolated across the whole far range. Coming nearer
+    //   than ~108 in it would exceed full power, so the result is clamped
+    //   to FAR_POWER_MAX (1.0). (Power is also floored at 0.0 as a guard.)
+    // ============================================================
+    private double flywheelPowerForDistanceFar(double distanceInches) {
+        double power = FAR_BASE_POWER
+                + FAR_SLOPE * (distanceInches - FAR_BASE_DIST);
+        if (power > FAR_POWER_MAX) power = FAR_POWER_MAX;
+        if (power < 0.0)           power = 0.0;
+        return power;
+    }
+
+    // ============================================================
+    //   REQUIRED FLYWHEEL SPIN-UP TIME (override- and distance-dependent)
+    //   When the G1 dpad_right full-power override is active it dictates the
+    //   spin-up time directly: 3.35 s in the "far" state, 1.5 s in the "near"
+    //   state. Otherwise the blocker only opens after the flywheel has been
+    //   running the distance-based time: far shots (tag at/over 76.5 in, or no
+    //   tag at all) need 3.15 s; closer shots use 1.20 s.
     // ============================================================
     private double requiredSpinupSeconds() {
         if (flywheelOverrideActive) {
             return flywheelOverrideFar ? OVERRIDE_SPINUP_FAR : OVERRIDE_SPINUP_NEAR;
         }
-        return BLOCKER_FLYWHEEL_SPINUP_FAR;
+        boolean far = (tagDistanceInches < 0)                       // no tag ever / not seen
+                || (tagDistanceInches >= FLYWHEEL_CHART_MAX_DISTANCE); // 76.5 in or beyond
+        return far ? BLOCKER_FLYWHEEL_SPINUP_FAR : BLOCKER_FLYWHEEL_SPINUP_NEAR;
     }
 
     // ============================================================
@@ -836,12 +1170,45 @@ public class ApolloDrive extends LinearOpMode {
     }
 
     // ============================================================
+    //   VISION INIT
+    // ============================================================
+    private void initializeVision() {
+        aprilTagProcessor = new AprilTagProcessor.Builder()
+                .setDrawAxes(true)
+                .setDrawCubeProjection(false)
+                .setDrawTagOutline(true)
+                .setDrawTagID(true)
+                .build();
+
+        visionPortal = new VisionPortal.Builder()
+                .setCamera(hardwareMap.get(WebcamName.class, "turretCam"))
+                .addProcessor(aprilTagProcessor)
+                // 640x480 — native resolution. The SDK ships a real calibration
+                // for this resolution, so AprilTag pose (range/bearing) is
+                // accurate, which the distance-based flywheel chart depends on.
+                .setCameraResolution(new android.util.Size(640, 480))
+                // LiveView off — frees CPU/bandwidth, raises effective frame rate.
+                .enableLiveView(false)
+                // MJPEG lets the webcam stream at its highest supported frame
+                // rate. Actual fps is set by the camera hardware's available
+                // modes — there is no separate numeric fps cap to raise.
+                .setStreamFormat(VisionPortal.StreamFormat.MJPEG)
+                .build();
+
+        // Decimation 3 at 640x480 recovers much of the detection-rate gain that
+        // the lower resolution was for, without sacrificing the calibration.
+        // Higher decimation = faster detection, shorter effective range.
+        aprilTagProcessor.setDecimation(3);
+    }
+
+    // ============================================================
     //   HARDWARE INIT
     // ============================================================
     private void initializeHardware() {
-        frontLeftDrive  = hardwareMap.get(DcMotorEx.class, "frontLeftDrive");
-        frontRightDrive = hardwareMap.get(DcMotorEx.class, "frontRightDrive");
-        backRightDrive  = hardwareMap.get(DcMotorEx.class, "backRightDrive");
+        frontLeftDrive  = hardwareMap.get(DcMotor.class, "frontLeftDrive");
+        frontRightDrive = hardwareMap.get(DcMotor.class, "frontRightDrive");
+        backLeftDrive   = hardwareMap.get(DcMotor.class, "backLeftDrive");
+        backRightDrive  = hardwareMap.get(DcMotor.class, "backRightDrive");
 
         frontLeftSteer  = hardwareMap.get(CRServo.class, "frontLeftSteer");
         frontRightSteer = hardwareMap.get(CRServo.class, "frontRightSteer");
@@ -852,13 +1219,12 @@ public class ApolloDrive extends LinearOpMode {
         frontRightEncoder = hardwareMap.get(AnalogInput.class, "frontRightEncoder");
         backLeftEncoder   = hardwareMap.get(AnalogInput.class, "backLeftEncoder");
         backRightEncoder  = hardwareMap.get(AnalogInput.class, "backRightEncoder");
-        // (back-left pod steers via servo+encoder but has NO drive motor)
 
-        // Intake + flywheel motors as DcMotorEx for current sensing.
+        // Intake motors as DcMotorEx for current sensing (stall detection).
         topIntake    = hardwareMap.get(DcMotorEx.class, "topIntake");
         bottomIntake = hardwareMap.get(DcMotorEx.class, "bottomIntake");
-        leftFly      = hardwareMap.get(DcMotorEx.class, "leftFly");
-        rightFly     = hardwareMap.get(DcMotorEx.class, "rightFly");
+        leftFly      = hardwareMap.get(DcMotor.class, "leftFly");
+        rightFly     = hardwareMap.get(DcMotor.class, "rightFly");
 
         topIntake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
         bottomIntake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
@@ -873,11 +1239,13 @@ public class ApolloDrive extends LinearOpMode {
         blocker = hardwareMap.get(Servo.class, "blocker");
         pto     = hardwareMap.get(Servo.class, "pto");
 
+        leftTurret  = hardwareMap.get(Servo.class, "leftTurret");
+        rightTurret = hardwareMap.get(Servo.class, "rightTurret");
+
+        light = hardwareMap.get(Servo.class, "light");
+
         voltageSensor = hardwareMap.voltageSensor.iterator().next();
         imu = hardwareMap.get(IMU.class, "imu");
-
-        // Capture all REV hubs for whole-robot current telemetry.
-        allHubs = hardwareMap.getAll(com.qualcomm.hardware.lynx.LynxModule.class);
 
         IMU.Parameters parameters = new IMU.Parameters(
                 new RevHubOrientationOnRobot(
@@ -889,14 +1257,16 @@ public class ApolloDrive extends LinearOpMode {
         imu.resetYaw();
 
         frontLeftDrive.setDirection(DcMotor.Direction.REVERSE);
+        backLeftDrive.setDirection(DcMotor.Direction.REVERSE);
         frontRightDrive.setDirection(DcMotor.Direction.FORWARD);
         backRightDrive.setDirection(DcMotor.Direction.FORWARD);
 
         frontLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         frontRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        backLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         backRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
-        resetMotors(frontLeftDrive, frontRightDrive, backRightDrive);
+        resetMotors(frontLeftDrive, frontRightDrive, backLeftDrive, backRightDrive);
 
         headingOffset = 0.0;
     }
@@ -947,9 +1317,7 @@ public class ApolloDrive extends LinearOpMode {
         if (Double.isNaN(speed)) speed = 0;
 
         steerServo.setPower(servoPower);
-        // driveMotor may be null for a steer-only pod (e.g. back-left, which
-        // steers but has no drive motor). Skip the drive command in that case.
-        if (driveMotor != null) driveMotor.setPower(speed);
+        driveMotor.setPower(speed);
 
         dbg.rawAngle     = rawAngle;
         dbg.currentAngle = currentAngle;
@@ -973,6 +1341,27 @@ public class ApolloDrive extends LinearOpMode {
         while (angle >  Math.PI) angle -= 2 * Math.PI;
         while (angle < -Math.PI) angle += 2 * Math.PI;
         return angle;
+    }
+
+    /**
+     * Wraps a servo position into [0, 1) treating the range as continuous:
+     * going past 1 jumps to 0 and keeps increasing; going below 0 jumps to 1.
+     * Used by the turret, which travels a finite 360deg across the 0..1 range.
+     */
+    private double wrapUnit(double pos) {
+        if (Double.isNaN(pos)) return 0.5; // safe center if something went NaN
+        while (pos >= 1.0) pos -= 1.0;
+        while (pos <  0.0) pos += 1.0;
+        return pos;
+    }
+
+    /**
+     * Converts a raw turretPosition (0..1 servo value) into the angle the
+     * CAMERA points, relative to the robot chassis, in radians. Used only for
+     * the "Turret rel. angle" telemetry readout now that aiming is manual.
+     */
+    private double turretPosToRelAngle(double pos) {
+        return wrapAngle((pos - 0.5) * 2.0 * Math.PI + TURRET_ANGLE_OFFSET);
     }
 
     private void resetMotors(DcMotor... motors) {

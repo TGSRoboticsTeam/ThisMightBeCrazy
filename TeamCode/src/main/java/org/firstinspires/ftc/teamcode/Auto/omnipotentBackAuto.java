@@ -2,6 +2,7 @@ package org.firstinspires.ftc.teamcode.Auto;
 
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
@@ -20,7 +21,7 @@ import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
 import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 
 import java.util.List;
-
+@Disabled
 @Autonomous(name = "omnipotentBackAuto", group = "Swerve")
 public class omnipotentBackAuto extends LinearOpMode {
 
@@ -41,7 +42,7 @@ public class omnipotentBackAuto extends LinearOpMode {
 
     private AprilTagProcessor aprilTagProcessor;
     private VisionPortal visionPortal;
-    private double turretStartPos = 0.33;
+    private double turretStartPos = 0.31;
 
     final int TARGET_TAG_ID = 24;
     final double LIGHT_TAG_NOT_SEEN  = 0.278;
@@ -80,54 +81,42 @@ public class omnipotentBackAuto extends LinearOpMode {
 
     final double X_POD_OFFSET_MM =  41.9999922;
     final double Y_POD_OFFSET_MM = -148.3535768;
-    final double Y_DIRECTION_SIGN = +1.0;
 
     // ============================================================
-    // DISTANCE PID
-    // 5% slower overall drive speed: DRIVE_MAX_POWER reduced from 0.75 -> 0.7125
+    // DISTANCE PID  ── drive controls ported from justAuto
+    // Slower drive speed retained from this auto: DRIVE_MAX_POWER = 0.7125
+    // (justAuto used 0.75; we keep the slower 0.7125).
     // ============================================================
-    final double DRIVE_KP                 = 0.15;
-    final double DRIVE_KI                 = 0.0;
-    final double DRIVE_KD                 = 0.03;
-    final double DRIVE_KS                 = 0.05;
+    final double DRIVE_KP                 = 0.10;   // justAuto value
+    final double DRIVE_KI                 = 0.0;    // justAuto value
+    final double DRIVE_KD                 = 0.05;   // justAuto value
+    final double DRIVE_KS                 = 0.05;   // justAuto value
     final double DRIVE_TOLERANCE_IN       = 0.5;
-    final double DRIVE_MAX_POWER          = 0.7125;
-    final double DRIVE_MIN_POWER          = 0.20;
-    final double DRIVE_P_MIN_POWER        = 0.20;
-    final long   DRIVE_TIMEOUT_MS         = 1500;
+    final double DRIVE_MAX_POWER          = 0.5; // slower drive speed (kept)
+    final double DRIVE_MIN_POWER          = 0.15;   // justAuto value
+    final long   DRIVE_TIMEOUT_MS         = 1000;   // 1s hard timeout per drive action
     final int    DRIVE_SETTLE_FRAMES      = 5;
     final double DRIVE_INTEGRAL_RANGE_IN  = 4.0;
     final double DRIVE_OVERSHOOT_BRAKE_POWER = 0.25;
 
     // ============================================================
-    // IN-DRIVE HEADING CORRECTION
+    // IN-DRIVE HEADING CORRECTION (justAuto tank-style)
     // ============================================================
     final double HEADING_KP             = 0.025;
     final double HEADING_MAX_CORRECTION = 0.3;
 
     // ============================================================
-    // STANDALONE HEADING CORRECTION
+    // HEADING SETTLE BEFORE EACH DRIVE (justAuto behavior)
     // ============================================================
-    final double HEADING_CORRECT_KP              = 0.040;
-    final double HEADING_CORRECT_KD              = 0.002;
-    final double HEADING_CORRECT_KS              = 0.05;
-    final double HEADING_CORRECT_TOLERANCE_DEG   = 2;
-    final double HEADING_CORRECT_MAX_POWER       = 0.5;
-    final double HEADING_CORRECT_MIN_POWER       = 0.22;
-    final double HEADING_CORRECT_P_MIN_POWER     = 0.22;
-    final long   HEADING_CORRECT_TIMEOUT_MS      = 750;
-    final int    HEADING_CORRECT_SETTLE_FRAMES   = 5;
+    final double HEADING_SETTLE_TOLERANCE_DEG = 0.75;
+    final long   HEADING_SETTLE_TIMEOUT_MS    = 1750;
 
     // ============================================================
-    // WHEEL ALIGNMENT
+    // WHEEL ALIGNMENT (always forward)
     // ============================================================
     final double STEER_ALIGN_TOLERANCE_RAD = Math.toRadians(1.75);
     final long   STEER_ALIGN_TIMEOUT_MS    = 1500;
-
-    final double WHEELS_FORWARD_RAD  = 0.0;
-    final double WHEELS_SIDEWAYS_RAD = Math.PI / 2;
-
-    final double MM_PER_INCH = 25.4;
+    final double WHEELS_FORWARD_RAD        = 0.0;
 
     // ============================================================
     // MECHANISM CONSTANTS
@@ -143,9 +132,10 @@ public class omnipotentBackAuto extends LinearOpMode {
 
     final double INTAKE_STALL_CURRENT_AMPS       = 7.0;
     final double INTAKE_STALL_TIME_SECONDS       = 1.0;
+    final double INTAKE_ACTION_TIMEOUT_SECONDS   = 1.0; // 1s hard cap per intake action
 
     // ApolloDrive-mirrored launch sequence constants
-    final double BLOCKER_FLYWHEEL_SPINUP_SECONDS = 3.15;
+    final double BLOCKER_FLYWHEEL_SPINUP_SECONDS = 3.4;
     final double BLOCKER_LAUNCH_INTAKE_DELAY     = 0.4;
     final double BLOCKER_AUTO_RETURN_SECONDS     = 1.5;
 
@@ -164,8 +154,8 @@ public class omnipotentBackAuto extends LinearOpMode {
     private final ElapsedTime matchTimer = new ElapsedTime();
     final double MATCH_CUTOFF_SECONDS = 28.0;
 
-    final double FORWARD_COLLECT_FEET               = 3.5;
-    final double COLLECT_PUSH_FEET                  = 0.5;
+    final double FORWARD_COLLECT_FEET               = 10;
+    final double COLLECT_PUSH_FEET                  = 50;
     // Fraction of the full forward+push distance at which to turn the intake on.
     // 0.5 = halfway. Tune up/down as desired.
     final double INTAKE_ON_FRACTION                 = 0.5;
@@ -225,15 +215,15 @@ public class omnipotentBackAuto extends LinearOpMode {
         // ====================================================
         // COLLECT-AND-LAUNCH CYCLES
         // ====================================================
-        while (opModeIsActive() && !matchTimeUp()) {
-
+        //while (opModeIsActive() && !matchTimeUp()) {
+        while (opModeIsActive()) {
             updateLightFromAprilTag();
 
-            // 1. Single continuous forward leg: drives full distance,
-            //    turns intake on at INTAKE_ON_FRACTION of the way,
+            // 1. Single continuous forward leg (wheels forward): drives full
+            //    distance, turns intake on at INTAKE_ON_FRACTION of the way,
             //    runs until stall or full distance + grace window.
             collectCycleForward();
-            stopIntake();
+            //stopIntake();
             if (matchTimeUp()) break;
 
             // 2. Drive back to start; flywheels spin up immediately at start of return
@@ -360,31 +350,35 @@ public class omnipotentBackAuto extends LinearOpMode {
 
     // ============================================================
     // collectCycleForward
-    //   One continuous PID drive covering the full forward+push distance.
-    //   - Aligns wheels once at the start.
+    //   One continuous justAuto-style forward PID drive (wheels at angle 0)
+    //   covering the full forward+push distance.
+    //   - Aligns wheels forward + settles heading once at the start.
     //   - Turns the intake ON when the robot has traveled
     //     INTAKE_ON_FRACTION of the total distance (default halfway).
     //   - After the target distance is reached, continues to monitor for
     //     intake stall for COLLECT_POST_DISTANCE_GRACE_SECONDS (the "push"
-    //     phase) — power is set to 0 once at target, so stall happens by
-    //     the intake itself working against an element.
+    //     phase) — power is set to 0 once at target.
     //   - Never stops mid-leg to switch modes.
     // ============================================================
     private void collectCycleForward() {
-        double totalInches = (FORWARD_COLLECT_FEET + COLLECT_PUSH_FEET) * 12.0;
+        double totalInches      = (FORWARD_COLLECT_FEET + COLLECT_PUSH_FEET) * 12.0;
         double intakeOnDistance = totalInches * INTAKE_ON_FRACTION;
 
         odo.update();
         double startPos  = readPosXInches();
-        double targetPos = startPos + totalInches;
+        //double targetPos = startPos + totalInches;
+        double targetPos = totalInches;
 
-        alignWheelsTo(WHEELS_FORWARD_RAD, "ALIGNING FORWARD (cycle)");
 
-        boolean intakeOn          = false;
-        boolean distanceReached   = false;
-        ElapsedTime stallTimer    = new ElapsedTime();
-        boolean stallTiming       = false;
-        ElapsedTime graceTimer    = new ElapsedTime();
+        alignWheelsForward();
+        waitForHeadingSettle();
+
+        setIntakePower(INTAKE_FORWARD_POWER);
+        boolean intakeOn = false;
+        boolean distanceReached = false;
+        ElapsedTime stallTimer  = new ElapsedTime();
+        boolean stallTiming     = false;
+        ElapsedTime graceTimer  = new ElapsedTime();
 
         long startTime = System.currentTimeMillis();
         long lastTime  = startTime;
@@ -393,7 +387,8 @@ public class omnipotentBackAuto extends LinearOpMode {
         double initialErrorSign = Math.signum(totalInches);
         boolean hasOvershot = false;
 
-        while (opModeIsActive() && !matchTimeUp()) {
+        //while (opModeIsActive() && !matchTimeUp())
+        while (opModeIsActive()) {
             odo.update();
 
             long now = System.currentTimeMillis();
@@ -401,18 +396,22 @@ public class omnipotentBackAuto extends LinearOpMode {
             if (dt <= 0) dt = 0.001;
             lastTime = now;
 
+            // Hard 1s timeout for this drive action
+            if (now - startTime > DRIVE_TIMEOUT_MS) break;
+
             double currentPos = readPosXInches();
             double traveled   = currentPos - startPos;
             double error      = targetPos - currentPos;
 
             // --- Turn intake ON at INTAKE_ON_FRACTION of total distance ---
-            if (!intakeOn && Math.abs(traveled) >= intakeOnDistance) {
+            /*if (!intakeOn && Math.abs(traveled) >= intakeOnDistance) {
                 setIntakePower(INTAKE_FORWARD_POWER);
                 intakeOn = true;
             }
 
+*/
             // --- Stall watch (only meaningful once intake is on) ---
-            if (intakeOn) {
+            /*if (intakeOn) {
                 double topC = topIntake.getCurrent(CurrentUnit.AMPS);
                 double botC = bottomIntake.getCurrent(CurrentUnit.AMPS);
                 double maxC = Math.max(topC, botC);
@@ -426,7 +425,7 @@ public class omnipotentBackAuto extends LinearOpMode {
                 } else {
                     stallTiming = false;
                 }
-            }
+            }*/
 
             // --- Distance-reached + grace window for push/stall ---
             if (!distanceReached && Math.abs(error) < DRIVE_TOLERANCE_IN) {
@@ -438,7 +437,7 @@ public class omnipotentBackAuto extends LinearOpMode {
                 break;
             }
 
-            // --- PID ---
+            // --- justAuto PID ---
             if (Math.abs(error) < DRIVE_INTEGRAL_RANGE_IN) {
                 integral += error * dt;
             } else {
@@ -446,11 +445,9 @@ public class omnipotentBackAuto extends LinearOpMode {
             }
             double derivative = (error - prevError) / dt;
 
-            double pTerm = DRIVE_KP * error;
-            if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
-            }
-            double basePower = pTerm + DRIVE_KI * integral + DRIVE_KD * derivative
+            double basePower = DRIVE_KP * error
+                    + DRIVE_KI * integral
+                    + DRIVE_KD * derivative
                     + DRIVE_KS * Math.signum(error);
             basePower = clamp(basePower, -DRIVE_MAX_POWER, DRIVE_MAX_POWER);
             if (Math.abs(basePower) < DRIVE_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
@@ -468,14 +465,14 @@ public class omnipotentBackAuto extends LinearOpMode {
             // Once at target, hold zero so the intake can finish the work
             if (distanceReached) basePower = 0.0;
 
-            double currentHeading = readHeadingDegrees();
-            double headingError   = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
-            double correction     = clamp(HEADING_KP * headingError,
+            // Heading hold (tank, wheels stay forward)
+            double headingError = wrapAngleDegrees(autoStartHeadingDeg - readHeadingDegrees());
+            double correction   = clamp(HEADING_KP * headingError,
                     -HEADING_MAX_CORRECTION, HEADING_MAX_CORRECTION);
 
-            double powerLeft  = clamp(basePower - correction, -1.0, 1.0);
-            double powerRight = clamp(basePower + correction, -1.0, 1.0);
-            setDrivePowersLeftRight(powerLeft, powerRight, WHEELS_FORWARD_RAD);
+            double leftPower  = clamp(basePower - correction, -1.0, 1.0);
+            double rightPower = clamp(basePower + correction, -1.0, 1.0);
+            setDrivePowers(leftPower, rightPower);
 
             telemetry.addData("Phase", "COLLECT CYCLE FORWARD");
             telemetry.addData("Traveled / Total (in)", "%.2f / %.2f", traveled, totalInches);
@@ -492,129 +489,31 @@ public class omnipotentBackAuto extends LinearOpMode {
             prevError = error;
         }
 
-        setDrivePowersLeftRight(0, 0, WHEELS_FORWARD_RAD);
-    }
-
-    // ============================================================
-    // collectDrive  (kept for compatibility; no longer used in the main loop)
-    // ============================================================
-    private void collectDrive(double inches) {
-        odo.update();
-        double startPos  = readPosXInches();
-        double targetPos = startPos + inches;
-
-        alignWheelsTo(WHEELS_FORWARD_RAD, "ALIGNING FORWARD (collect)");
-
-        setIntakePower(INTAKE_FORWARD_POWER);
-
-        ElapsedTime stallTimer    = new ElapsedTime();
-        boolean stallTiming       = false;
-        ElapsedTime graceTimer    = new ElapsedTime();
-        boolean distanceReached   = false;
-
-        long startTime = System.currentTimeMillis();
-        long lastTime  = startTime;
-        double prevError = inches;
-        double integral  = 0.0;
-
-        while (opModeIsActive() && !matchTimeUp()) {
-            odo.update();
-
-            long now = System.currentTimeMillis();
-            double dt = (now - lastTime) / 1000.0;
-            if (dt <= 0) dt = 0.001;
-            lastTime = now;
-
-            double currentPos = readPosXInches();
-            double error = targetPos - currentPos;
-
-            double topC = topIntake.getCurrent(CurrentUnit.AMPS);
-            double botC = bottomIntake.getCurrent(CurrentUnit.AMPS);
-            double maxC = Math.max(topC, botC);
-            if (maxC > INTAKE_STALL_CURRENT_AMPS) {
-                if (!stallTiming) {
-                    stallTiming = true;
-                    stallTimer.reset();
-                } else if (stallTimer.seconds() >= INTAKE_STALL_TIME_SECONDS) {
-                    break;
-                }
-            } else {
-                stallTiming = false;
-            }
-
-            if (!distanceReached && Math.abs(error) < DRIVE_TOLERANCE_IN) {
-                distanceReached = true;
-                graceTimer.reset();
-            }
-            if (distanceReached
-                    && graceTimer.seconds() >= COLLECT_POST_DISTANCE_GRACE_SECONDS) {
-                break;
-            }
-
-            if (Math.abs(error) < DRIVE_INTEGRAL_RANGE_IN) {
-                integral += error * dt;
-            } else {
-                integral = 0;
-            }
-            double derivative = (error - prevError) / dt;
-
-            double pTerm = DRIVE_KP * error;
-            if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
-            }
-            double basePower = pTerm + DRIVE_KI * integral + DRIVE_KD * derivative
-                    + DRIVE_KS * Math.signum(error);
-            basePower = clamp(basePower, -DRIVE_MAX_POWER, DRIVE_MAX_POWER);
-            if (Math.abs(basePower) < DRIVE_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                basePower = DRIVE_MIN_POWER * Math.signum(error);
-            }
-            if (distanceReached) basePower = 0.0;
-
-            double currentHeading = readHeadingDegrees();
-            double headingError   = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
-            double correction     = clamp(HEADING_KP * headingError,
-                    -HEADING_MAX_CORRECTION, HEADING_MAX_CORRECTION);
-
-            double powerLeft  = clamp(basePower - correction, -1.0, 1.0);
-            double powerRight = clamp(basePower + correction, -1.0, 1.0);
-            setDrivePowersLeftRight(powerLeft, powerRight, WHEELS_FORWARD_RAD);
-
-            telemetry.addData("Phase", "COLLECT DRIVE");
-            telemetry.addData("Error (in)", "%.2f", error);
-            telemetry.addData("Intake A", "top %.2f  bot %.2f", topC, botC);
-            telemetry.addData("Stall watch", stallTiming
-                    ? String.format("%.2fs / %.1fs", stallTimer.seconds(), INTAKE_STALL_TIME_SECONDS)
-                    : "ok");
-            telemetry.addData("Distance reached", distanceReached);
-            telemetry.addData("Match (s)", "%.1f", matchTimer.seconds());
-            telemetry.update();
-
-            prevError = error;
-        }
-
-        setDrivePowersLeftRight(0, 0, WHEELS_FORWARD_RAD);
+        setDrivePowers(0, 0);
     }
 
     // ============================================================
     // driveBackToStartWithFlywheelSpinup
-    //   - Starts the flywheel IMMEDIATELY at the beginning of the return
-    //     drive and starts the spinup timer.
-    //   - launchSequence() will then only wait for the remainder of
-    //     BLOCKER_FLYWHEEL_SPINUP_SECONDS once the robot arrives.
-    //   - Skips alignWheelsTo since the wheels are already pointed forward
-    //     from the collect cycle (saves ~100-300ms).
+    //   - Starts the flywheel IMMEDIATELY before the return drive and starts
+    //     the spinup timer. The flywheel keeps spinning through the wheel
+    //     alignment + heading settle, so that time still counts toward spinup.
+    //   - justAuto-style forward-wheel PID back to the start X.
+    //   - launchSequence() afterwards only waits for the remainder of
+    //     BLOCKER_FLYWHEEL_SPINUP_SECONDS.
     // ============================================================
     private void driveBackToStartWithFlywheelSpinup(double startX) {
         odo.update();
-        double currentX  = readPosXInches();
         double targetPos = startX;
 
-        // Start flywheel + spinup timer immediately (no alignment delay)
+        // Start flywheel + spinup timer immediately (spins during align/settle)
         startLauncherWithSpinupTimer();
+
+        alignWheelsForward();
+        waitForHeadingSettle();
 
         long startTime = System.currentTimeMillis();
         long lastTime  = startTime;
-        double prevError = targetPos - currentX;
+        double prevError = targetPos - readPosXInches();
         double integral  = 0.0;
         int settleCounter = 0;
         double initialErrorSign = Math.signum(prevError);
@@ -649,11 +548,9 @@ public class omnipotentBackAuto extends LinearOpMode {
             }
             double derivative = (error - prevError) / dt;
 
-            double pTerm = DRIVE_KP * error;
-            if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
-            }
-            double basePower = pTerm + DRIVE_KI * integral + DRIVE_KD * derivative
+            double basePower = DRIVE_KP * error
+                    + DRIVE_KI * integral
+                    + DRIVE_KD * derivative
                     + DRIVE_KS * Math.signum(error);
             basePower = clamp(basePower, -DRIVE_MAX_POWER, DRIVE_MAX_POWER);
             if (Math.abs(basePower) < DRIVE_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
@@ -668,14 +565,13 @@ public class omnipotentBackAuto extends LinearOpMode {
                 basePower = DRIVE_OVERSHOOT_BRAKE_POWER * Math.signum(error);
             }
 
-            double currentHeading = readHeadingDegrees();
-            double headingError   = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
-            double correction     = clamp(HEADING_KP * headingError,
+            double headingError = wrapAngleDegrees(autoStartHeadingDeg - readHeadingDegrees());
+            double correction   = clamp(HEADING_KP * headingError,
                     -HEADING_MAX_CORRECTION, HEADING_MAX_CORRECTION);
 
-            double powerLeft  = clamp(basePower - correction, -1.0, 1.0);
-            double powerRight = clamp(basePower + correction, -1.0, 1.0);
-            setDrivePowersLeftRight(powerLeft, powerRight, WHEELS_FORWARD_RAD);
+            double leftPower  = clamp(basePower - correction, -1.0, 1.0);
+            double rightPower = clamp(basePower + correction, -1.0, 1.0);
+            setDrivePowers(leftPower, rightPower);
 
             telemetry.addData("Phase", "RETURN TO START");
             telemetry.addData("Error (in)", "%.2f", error);
@@ -688,17 +584,18 @@ public class omnipotentBackAuto extends LinearOpMode {
             prevError = error;
         }
 
-        setDrivePowersLeftRight(0, 0, WHEELS_FORWARD_RAD);
+        setDrivePowers(0, 0);
     }
 
     // ============================================================
-    // driveToCornerForward
+    // driveToCornerForward — justAuto-style forward drive to the park spot
     // ============================================================
     private void driveToCornerForward(double startX) {
         odo.update();
         double targetPos = startX + CORNER_FORWARD_FEET * 12.0;
 
-        alignWheelsTo(WHEELS_FORWARD_RAD, "ALIGNING FORWARD (corner)");
+        alignWheelsForward();
+        waitForHeadingSettle();
 
         long startTime = System.currentTimeMillis();
         long lastTime  = startTime;
@@ -734,11 +631,9 @@ public class omnipotentBackAuto extends LinearOpMode {
             }
             double derivative = (error - prevError) / dt;
 
-            double pTerm = DRIVE_KP * error;
-            if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
-            }
-            double basePower = pTerm + DRIVE_KI * integral + DRIVE_KD * derivative
+            double basePower = DRIVE_KP * error
+                    + DRIVE_KI * integral
+                    + DRIVE_KD * derivative
                     + DRIVE_KS * Math.signum(error);
             basePower = clamp(basePower, -DRIVE_MAX_POWER, DRIVE_MAX_POWER);
             if (Math.abs(basePower) < DRIVE_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
@@ -753,14 +648,13 @@ public class omnipotentBackAuto extends LinearOpMode {
                 basePower = DRIVE_OVERSHOOT_BRAKE_POWER * Math.signum(error);
             }
 
-            double currentHeading = readHeadingDegrees();
-            double headingError   = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
-            double correction     = clamp(HEADING_KP * headingError,
+            double headingError = wrapAngleDegrees(autoStartHeadingDeg - readHeadingDegrees());
+            double correction   = clamp(HEADING_KP * headingError,
                     -HEADING_MAX_CORRECTION, HEADING_MAX_CORRECTION);
 
-            double powerLeft  = clamp(basePower - correction, -1.0, 1.0);
-            double powerRight = clamp(basePower + correction, -1.0, 1.0);
-            setDrivePowersLeftRight(powerLeft, powerRight, WHEELS_FORWARD_RAD);
+            double leftPower  = clamp(basePower - correction, -1.0, 1.0);
+            double rightPower = clamp(basePower + correction, -1.0, 1.0);
+            setDrivePowers(leftPower, rightPower);
 
             telemetry.addData("Phase", "DRIVE TO CORNER");
             telemetry.addData("Error (in)", "%.2f", error);
@@ -770,7 +664,7 @@ public class omnipotentBackAuto extends LinearOpMode {
             prevError = error;
         }
 
-        setDrivePowersLeftRight(0, 0, WHEELS_FORWARD_RAD);
+        setDrivePowers(0, 0);
     }
 
     // ============================================================
@@ -860,7 +754,8 @@ public class omnipotentBackAuto extends LinearOpMode {
         boolean stallTiming = false;
         boolean stalled     = false;
 
-        while (opModeIsActive() && runTimer.seconds() < seconds) {
+        while (opModeIsActive() && runTimer.seconds() < seconds
+                && runTimer.seconds() < INTAKE_ACTION_TIMEOUT_SECONDS) {
             double topC = topIntake.getCurrent(CurrentUnit.AMPS);
             double botC = bottomIntake.getCurrent(CurrentUnit.AMPS);
             double maxC = Math.max(topC, botC);
@@ -899,7 +794,8 @@ public class omnipotentBackAuto extends LinearOpMode {
         setIntakePower(-INTAKE_REVERSE_HOLD_POWER);
 
         ElapsedTime runTimer = new ElapsedTime();
-        while (opModeIsActive() && runTimer.seconds() < seconds) {
+        while (opModeIsActive() && runTimer.seconds() < seconds
+                && runTimer.seconds() < INTAKE_ACTION_TIMEOUT_SECONDS) {
             telemetry.addData("Phase", "INTAKE REVERSE");
             telemetry.addData("Elapsed (s)", "%.2f / %.2f", runTimer.seconds(), seconds);
             telemetry.update();
@@ -973,468 +869,41 @@ public class omnipotentBackAuto extends LinearOpMode {
     }
 
     // ============================================================
-    // DRIVE METHODS
+    // DRIVE SUPPORT — ported from justAuto (forward-only)
     // ============================================================
 
-    public void driveX(double inches) {
-        odo.update();
-        double startPos  = readPosXInches();
-        double targetPos = startPos + inches;
-
-        alignWheelsTo(WHEELS_FORWARD_RAD, "ALIGNING FORWARD");
-
-        runDistancePID(inches, targetPos, true, WHEELS_FORWARD_RAD, true);
-    }
-
-    /**
-     * Same as driveX, but turns the intake on once the robot is within
-     * `prestartInches` of the target — without stopping or slowing the drive.
-     * Leaves the intake running at the end so a subsequent collect step
-     * (e.g. collectDrive) picks up seamlessly with no spinup gap.
-     */
-    public void driveXWithIntakePrestart(double inches, double prestartInches) {
-        odo.update();
-        double startPos  = readPosXInches();
-        double targetPos = startPos + inches;
-
-        alignWheelsTo(WHEELS_FORWARD_RAD, "ALIGNING FORWARD (prestart)");
-
-        double prevError = inches;
-        double integral  = 0.0;
-        long startTime   = System.currentTimeMillis();
-        long lastTime    = startTime;
-        int settleCounter = 0;
-
-        double initialErrorSign = Math.signum(inches);
-        boolean hasOvershot = false;
-        boolean intakeStarted = false;
-
-        while (opModeIsActive()) {
-            odo.update();
-
-            long now = System.currentTimeMillis();
-            double dt = (now - lastTime) / 1000.0;
-            if (dt <= 0) dt = 0.001;
-            lastTime = now;
-
-            double currentPos = readPosXInches();
-            double error = targetPos - currentPos;
-
-            // --- INTAKE PRESTART ---
-            if (!intakeStarted && Math.abs(error) <= prestartInches) {
-                setIntakePower(INTAKE_FORWARD_POWER);
-                intakeStarted = true;
-            }
-
-            if (Math.abs(error) < DRIVE_TOLERANCE_IN) {
-                settleCounter++;
-                if (settleCounter >= DRIVE_SETTLE_FRAMES) break;
-            } else {
-                settleCounter = 0;
-            }
-            if (now - startTime > DRIVE_TIMEOUT_MS) break;
-
-            if (Math.abs(error) < DRIVE_INTEGRAL_RANGE_IN) {
-                integral += error * dt;
-            } else {
-                integral = 0;
-            }
-            double derivative = (error - prevError) / dt;
-
-            double pTerm = DRIVE_KP * error;
-            if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
-            }
-
-            double basePower = pTerm + DRIVE_KI * integral + DRIVE_KD * derivative
-                    + DRIVE_KS * Math.signum(error);
-            basePower = clamp(basePower, -DRIVE_MAX_POWER, DRIVE_MAX_POWER);
-            if (Math.abs(basePower) < DRIVE_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                basePower = DRIVE_MIN_POWER * Math.signum(error);
-            }
-
-            if (initialErrorSign != 0 && Math.signum(error) != initialErrorSign
-                    && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                hasOvershot = true;
-            }
-            if (hasOvershot && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                basePower = DRIVE_OVERSHOOT_BRAKE_POWER * Math.signum(error);
-            }
-
-            double currentHeading = readHeadingDegrees();
-            double headingError   = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
-            double correction     = clamp(HEADING_KP * headingError,
-                    -HEADING_MAX_CORRECTION, HEADING_MAX_CORRECTION);
-
-            double powerLeft  = clamp(basePower - correction, -1.0, 1.0);
-            double powerRight = clamp(basePower + correction, -1.0, 1.0);
-            setDrivePowersLeftRight(powerLeft, powerRight, WHEELS_FORWARD_RAD);
-
-            telemetry.addData("Phase", "DRIVE X (intake prestart)");
-            telemetry.addData("Target (in)",  "%.2f", targetPos);
-            telemetry.addData("Current (in)", "%.2f", currentPos);
-            telemetry.addData("Error (in)",   "%.2f", error);
-            telemetry.addData("Intake",       intakeStarted ? "ON (prestarted)" : "waiting");
-            telemetry.addData("Prestart at",  "%.2f in remaining", prestartInches);
-            telemetry.addData("Match (s)",    "%.1f", matchTimer.seconds());
-            telemetry.update();
-
-            prevError = error;
-        }
-
-        // Brief settle, leaving intake running for the next phase
-        long stopUntil = System.currentTimeMillis() + 100;
-        while (opModeIsActive() && System.currentTimeMillis() < stopUntil) {
-            odo.update();
-            setDrivePowersLeftRight(0, 0, WHEELS_FORWARD_RAD);
-        }
-        setDrivePowersLeftRight(0, 0, WHEELS_FORWARD_RAD);
-    }
-
-    public void driveY(double inches) {
-        odo.update();
-        double startPos  = readPosYInches();
-        double targetPos = startPos + inches;
-
-        alignWheelsTo(WHEELS_SIDEWAYS_RAD, "ALIGNING SIDEWAYS");
-
-        runDistancePID(inches, targetPos, false, WHEELS_SIDEWAYS_RAD, false);
-    }
-
-    public void driveXY(double dxInches, double dyInches) {
-        odo.update();
-        double startX  = readPosXInches();
-        double startY  = readPosYInches();
-        double targetX = startX + dxInches;
-        double targetY = startY + dyInches;
-
-        runDiagonalPID(dxInches, dyInches, startX, startY, targetX, targetY);
-    }
-
-    public void driveToXY(double targetX, double targetY) {
-        odo.update();
-        double startX = readPosXInches();
-        double startY = readPosYInches();
-        double dx = targetX - startX;
-        double dy = targetY - startY;
-
-        runDiagonalPID(dx, dy, startX, startY, targetX, targetY);
-    }
-
-    private void runDiagonalPID(double dx, double dy,
-                                double startX, double startY,
-                                double targetX, double targetY) {
-        double totalDistance = Math.hypot(dx, dy);
-        if (totalDistance < DRIVE_TOLERANCE_IN) return;
-
-        double travelAngle = Math.atan2(dy, dx);
-        double cosA = Math.cos(travelAngle);
-        double sinA = Math.sin(travelAngle);
-
-        alignWheelsTo(travelAngle,
-                String.format("ALIGNING %.1f deg", Math.toDegrees(travelAngle)));
-
-        double prevError = totalDistance;
-        double integral  = 0.0;
-        long startTime   = System.currentTimeMillis();
-        long lastTime    = startTime;
-        int settleCounter = 0;
-        boolean hasOvershot = false;
-
-        while (opModeIsActive()) {
-            odo.update();
-
-            long now = System.currentTimeMillis();
-            double dt = (now - lastTime) / 1000.0;
-            if (dt <= 0) dt = 0.001;
-            lastTime = now;
-
-            double currentX = readPosXInches();
-            double currentY = readPosYInches();
-            double traveled = (currentX - startX) * cosA + (currentY - startY) * sinA;
-            double error    = totalDistance - traveled;
-
-            if (Math.abs(error) < DRIVE_TOLERANCE_IN) {
-                settleCounter++;
-                if (settleCounter >= DRIVE_SETTLE_FRAMES) break;
-            } else {
-                settleCounter = 0;
-            }
-            if (now - startTime > DRIVE_TIMEOUT_MS) break;
-
-            if (Math.abs(error) < DRIVE_INTEGRAL_RANGE_IN) {
-                integral += error * dt;
-            } else {
-                integral = 0;
-            }
-            double derivative = (error - prevError) / dt;
-
-            double pTerm = DRIVE_KP * error;
-            if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
-            }
-
-            double basePower = pTerm + DRIVE_KI * integral + DRIVE_KD * derivative
-                    + DRIVE_KS * Math.signum(error);
-            basePower = clamp(basePower, -DRIVE_MAX_POWER, DRIVE_MAX_POWER);
-            if (Math.abs(basePower) < DRIVE_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                basePower = DRIVE_MIN_POWER * Math.signum(error);
-            }
-
-            if (error < -DRIVE_TOLERANCE_IN) hasOvershot = true;
-            if (hasOvershot && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                basePower = DRIVE_OVERSHOOT_BRAKE_POWER * Math.signum(error);
-            }
-
-            setDrivePowersAll(basePower, travelAngle);
-
-            double currentHeading = readHeadingDegrees();
-            double headingError   = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
-
-            telemetry.addData("Phase", "DIAGONAL");
-            telemetry.addData("Travel angle (deg)", "%.2f", Math.toDegrees(travelAngle));
-            telemetry.addData("Total dist (in)",    "%.2f", totalDistance);
-            telemetry.addData("Traveled (in)",      "%.2f", traveled);
-            telemetry.addData("Error (in)",         "%.2f", error);
-            telemetry.addData("Current (x,y)",      "(%.2f, %.2f)", currentX, currentY);
-            telemetry.addData("Target  (x,y)",      "(%.2f, %.2f)", targetX, targetY);
-            telemetry.addData("Base Power",         "%.3f", basePower);
-            telemetry.addData("Overshot?",          hasOvershot);
-            telemetry.addData("Heading drift (deg)","%.2f", headingError);
-            telemetry.addData("Elapsed (ms)",       now - startTime);
-            telemetry.update();
-
-            prevError = error;
-        }
-
-        long stopUntil = System.currentTimeMillis() + 100;
-        while (opModeIsActive() && System.currentTimeMillis() < stopUntil) {
-            odo.update();
-            setDrivePowersAll(0, travelAngle);
-        }
-        setDrivePowersAll(0, travelAngle);
-    }
-
-    private void runDistancePID(double inches, double targetPos, boolean readX,
-                                double wheelAngle, boolean useLeftRight) {
-        double prevError = inches;
-        double integral  = 0.0;
-        long startTime   = System.currentTimeMillis();
-        long lastTime    = startTime;
-        int settleCounter = 0;
-
-        double initialErrorSign = Math.signum(inches);
-        boolean hasOvershot = false;
-
-        while (opModeIsActive()) {
-            odo.update();
-
-            long now = System.currentTimeMillis();
-            double dt = (now - lastTime) / 1000.0;
-            if (dt <= 0) dt = 0.001;
-            lastTime = now;
-
-            double currentPos = readX ? readPosXInches() : readPosYInches();
-            double error = targetPos - currentPos;
-
-            if (Math.abs(error) < DRIVE_TOLERANCE_IN) {
-                settleCounter++;
-                if (settleCounter >= DRIVE_SETTLE_FRAMES) break;
-            } else {
-                settleCounter = 0;
-            }
-            if (now - startTime > DRIVE_TIMEOUT_MS) break;
-
-            if (Math.abs(error) < DRIVE_INTEGRAL_RANGE_IN) {
-                integral += error * dt;
-            } else {
-                integral = 0;
-            }
-            double derivative = (error - prevError) / dt;
-
-            double pTerm = DRIVE_KP * error;
-            if (Math.abs(pTerm) < DRIVE_P_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                pTerm = DRIVE_P_MIN_POWER * Math.signum(error);
-            }
-
-            double basePower = pTerm + DRIVE_KI * integral + DRIVE_KD * derivative
-                    + DRIVE_KS * Math.signum(error);
-            basePower = clamp(basePower, -DRIVE_MAX_POWER, DRIVE_MAX_POWER);
-            if (Math.abs(basePower) < DRIVE_MIN_POWER && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                basePower = DRIVE_MIN_POWER * Math.signum(error);
-            }
-
-            if (initialErrorSign != 0 && Math.signum(error) != initialErrorSign
-                    && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                hasOvershot = true;
-            }
-            if (hasOvershot && Math.abs(error) > DRIVE_TOLERANCE_IN) {
-                basePower = DRIVE_OVERSHOOT_BRAKE_POWER * Math.signum(error);
-            }
-
-            double currentHeading = readHeadingDegrees();
-            double headingError   = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
-            double correction     = clamp(HEADING_KP * headingError,
-                    -HEADING_MAX_CORRECTION, HEADING_MAX_CORRECTION);
-
-            double powerA = clamp(basePower - correction, -1.0, 1.0);
-            double powerB = clamp(basePower + correction, -1.0, 1.0);
-
-            if (useLeftRight) {
-                setDrivePowersLeftRight(powerA, powerB, wheelAngle);
-            } else {
-                setDrivePowersFrontBack(powerA, powerB, wheelAngle);
-            }
-
-            telemetry.addData("Phase",   readX ? "DRIVING X" : "DRIVING Y");
-            telemetry.addData("Target (in)",  "%.2f", targetPos);
-            telemetry.addData("Current (in)", "%.2f", currentPos);
-            telemetry.addData("Error (in)",   "%.2f", error);
-            telemetry.addData("Base Power",   "%.3f", basePower);
-            telemetry.addData("Overshot?",    hasOvershot);
-            telemetry.addData("Heading err (deg)", "%.2f", headingError);
-            telemetry.addData("Correction",   "%.3f", correction);
-            telemetry.addData(useLeftRight ? "Left / Right" : "Front / Back",
-                    "%.3f / %.3f", powerA, powerB);
-            telemetry.addData("Elapsed (ms)", now - startTime);
-            telemetry.update();
-
-            prevError = error;
-        }
-
-        long stopUntil = System.currentTimeMillis() + 100;
-        while (opModeIsActive() && System.currentTimeMillis() < stopUntil) {
-            odo.update();
-            if (useLeftRight) setDrivePowersLeftRight(0, 0, wheelAngle);
-            else              setDrivePowersFrontBack(0, 0, wheelAngle);
-        }
-        if (useLeftRight) setDrivePowersLeftRight(0, 0, wheelAngle);
-        else              setDrivePowersFrontBack(0, 0, wheelAngle);
-    }
-
-    // ============================================================
-    // correctHeading
-    // ============================================================
-    public void correctHeading() {
-        long startTime = System.currentTimeMillis();
-        long lastTime  = startTime;
-        double prevError;
-        int settleCounter = 0;
-
-        odo.update();
-        prevError = wrapAngleDegrees(autoStartHeadingDeg - readHeadingDegrees());
-
-        while (opModeIsActive()) {
-            odo.update();
-
-            long now = System.currentTimeMillis();
-            double dt = (now - lastTime) / 1000.0;
-            if (dt <= 0) dt = 0.001;
-            lastTime = now;
-
-            double currentHeading = readHeadingDegrees();
-            double error = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
-
-            if (Math.abs(error) < HEADING_CORRECT_TOLERANCE_DEG) {
-                settleCounter++;
-                if (settleCounter >= HEADING_CORRECT_SETTLE_FRAMES) break;
-            } else {
-                settleCounter = 0;
-            }
-            if (now - startTime > HEADING_CORRECT_TIMEOUT_MS) break;
-
-            double derivative = (error - prevError) / dt;
-
-            double pTerm = HEADING_CORRECT_KP * error;
-            if (Math.abs(pTerm) < HEADING_CORRECT_P_MIN_POWER
-                    && Math.abs(error) > HEADING_CORRECT_TOLERANCE_DEG) {
-                pTerm = HEADING_CORRECT_P_MIN_POWER * Math.signum(error);
-            }
-
-            double rotPower = pTerm + HEADING_CORRECT_KD * derivative
-                    + HEADING_CORRECT_KS * Math.signum(error);
-            rotPower = clamp(rotPower, -HEADING_CORRECT_MAX_POWER, HEADING_CORRECT_MAX_POWER);
-            if (Math.abs(rotPower) < HEADING_CORRECT_MIN_POWER
-                    && Math.abs(error) > HEADING_CORRECT_TOLERANCE_DEG) {
-                rotPower = HEADING_CORRECT_MIN_POWER * Math.signum(error);
-            }
-
-            double rot = -rotPower;
-            double A = -rot * (WHEELBASE / R);
-            double B =  rot * (WHEELBASE / R);
-            double C = -rot * (TRACK_WIDTH / R);
-            double D =  rot * (TRACK_WIDTH / R);
-
-            double speedFL = Math.hypot(B, D);
-            double speedFR = Math.hypot(B, C);
-            double speedBL = Math.hypot(A, D);
-            double speedBR = Math.hypot(A, C);
-            double maxSpeed = Math.max(Math.max(speedFL, speedFR), Math.max(speedBL, speedBR));
-            if (maxSpeed > 1.0) {
-                speedFL /= maxSpeed; speedFR /= maxSpeed;
-                speedBL /= maxSpeed; speedBR /= maxSpeed;
-            }
-
-            double angleFL = Math.atan2(B, D);
-            double angleFR = Math.atan2(B, C);
-            double angleBL = Math.atan2(A, D);
-            double angleBR = Math.atan2(A, C);
-
-            runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  speedFL, angleFL);
-            runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, speedFR, angleFR);
-            runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   speedBL, angleBL);
-            runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  speedBR, angleBR);
-
-            telemetry.addData("Phase", "CORRECTING HEADING");
-            telemetry.addData("Target heading (deg)",  "%.3f", autoStartHeadingDeg);
-            telemetry.addData("Current heading (deg)", "%.3f", currentHeading);
-            telemetry.addData("Error (deg)",           "%.3f", error);
-            telemetry.addData("Rot power",             "%.3f", rotPower);
-            telemetry.addData("Elapsed (ms)",          now - startTime);
-            telemetry.update();
-
-            prevError = error;
-        }
-
-        frontLeftDrive.setPower(0);
-        frontRightDrive.setPower(0);
-        backLeftDrive.setPower(0);
-        backRightDrive.setPower(0);
-        frontLeftSteer.setPower(0);
-        frontRightSteer.setPower(0);
-        backLeftSteer.setPower(0);
-        backRightSteer.setPower(0);
-    }
-
-    // ============================================================
-    // alignWheelsTo
-    // ============================================================
-    private void alignWheelsTo(double targetAngle, String phaseLabel) {
+    // ------------------------------------------------------------
+    // Align all four modules to forward (angle 0). Robust to the
+    // equivalent 180-degree solution (a wheel pointing backward is fine
+    // for forward driving since runModule inverts drive power), so this
+    // never spuriously times out the way a strict 0-only check would.
+    // ------------------------------------------------------------
+    private void alignWheelsForward() {
         long startTime = System.currentTimeMillis();
 
         while (opModeIsActive()) {
             odo.update();
 
-            double errFL = wrapAngle(targetAngle - (getRawAngle(frontLeftEncoder)  - FRONT_LEFT_OFFSET));
-            double errFR = wrapAngle(targetAngle - (getRawAngle(frontRightEncoder) - FRONT_RIGHT_OFFSET));
-            double errBL = wrapAngle(targetAngle - (getRawAngle(backLeftEncoder)   - BACK_LEFT_OFFSET));
-            double errBR = wrapAngle(targetAngle - (getRawAngle(backRightEncoder)  - BACK_RIGHT_OFFSET));
+            double errFL = wrapAngle(WHEELS_FORWARD_RAD - (getRawAngle(frontLeftEncoder)  - FRONT_LEFT_OFFSET));
+            double errFR = wrapAngle(WHEELS_FORWARD_RAD - (getRawAngle(frontRightEncoder) - FRONT_RIGHT_OFFSET));
+            double errBL = wrapAngle(WHEELS_FORWARD_RAD - (getRawAngle(backLeftEncoder)   - BACK_LEFT_OFFSET));
+            double errBR = wrapAngle(WHEELS_FORWARD_RAD - (getRawAngle(backRightEncoder)  - BACK_RIGHT_OFFSET));
 
-            runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  0, targetAngle);
-            runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, 0, targetAngle);
-            runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   0, targetAngle);
-            runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  0, targetAngle);
+            runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  0, WHEELS_FORWARD_RAD);
+            runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, 0, WHEELS_FORWARD_RAD);
+            runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   0, WHEELS_FORWARD_RAD);
+            runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  0, WHEELS_FORWARD_RAD);
 
             boolean aligned = isAlignedTo(errFL) && isAlignedTo(errFR)
                     && isAlignedTo(errBL) && isAlignedTo(errBR);
 
             long elapsed = System.currentTimeMillis() - startTime;
 
-            telemetry.addData("Phase", phaseLabel);
-            telemetry.addData("FL err (deg)", "%.2f", Math.toDegrees(errFL));
-            telemetry.addData("FR err (deg)", "%.2f", Math.toDegrees(errFR));
-            telemetry.addData("BL err (deg)", "%.2f", Math.toDegrees(errBL));
-            telemetry.addData("BR err (deg)", "%.2f", Math.toDegrees(errBR));
+            telemetry.addData("Phase", "ALIGNING FORWARD");
+            telemetry.addData("FL/FR err (deg)", "%.1f / %.1f",
+                    Math.toDegrees(errFL), Math.toDegrees(errFR));
+            telemetry.addData("BL/BR err (deg)", "%.1f / %.1f",
+                    Math.toDegrees(errBL), Math.toDegrees(errBR));
             telemetry.addData("Aligned?", aligned);
             telemetry.addData("Elapsed (ms)", elapsed);
             telemetry.update();
@@ -1455,36 +924,53 @@ public class omnipotentBackAuto extends LinearOpMode {
         return Math.min(e1, e2) < STEER_ALIGN_TOLERANCE_RAD;
     }
 
-    // ============================================================
-    // Drive power application
-    // ============================================================
-    private void setDrivePowersLeftRight(double leftPower, double rightPower, double wheelAngle) {
-        runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  leftPower,  wheelAngle);
-        runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   leftPower,  wheelAngle);
-        runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, rightPower, wheelAngle);
-        runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  rightPower, wheelAngle);
+    // ------------------------------------------------------------
+    // Wait until heading is within HEADING_SETTLE_TOLERANCE_DEG of the
+    // auto-start heading (or timeout). Holds wheels forward / motors off.
+    // Direct port of justAuto.waitForHeadingSettle().
+    // ------------------------------------------------------------
+    private void waitForHeadingSettle() {
+        long startTime = System.currentTimeMillis();
+
+        while (opModeIsActive()) {
+            odo.update();
+
+            double currentHeading = readHeadingDegrees();
+            double headingError = wrapAngleDegrees(autoStartHeadingDeg - currentHeading);
+
+            setDrivePowers(0, 0);
+
+            long elapsed = System.currentTimeMillis() - startTime;
+
+            telemetry.addData("Phase", "HEADING SETTLE");
+            telemetry.addData("Target heading (deg)", "%.3f", autoStartHeadingDeg);
+            telemetry.addData("Current heading (deg)", "%.3f", currentHeading);
+            telemetry.addData("Heading error (deg)", "%.3f", headingError);
+            telemetry.addData("Elapsed (ms)", elapsed);
+            telemetry.update();
+
+            if (Math.abs(headingError) < HEADING_SETTLE_TOLERANCE_DEG) break;
+            if (elapsed > HEADING_SETTLE_TIMEOUT_MS) break;
+        }
     }
 
-    private void setDrivePowersFrontBack(double frontPower, double backPower, double wheelAngle) {
-        runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  frontPower, wheelAngle);
-        runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, frontPower, wheelAngle);
-        runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   backPower,  wheelAngle);
-        runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  backPower,  wheelAngle);
+    // ------------------------------------------------------------
+    // Apply drive powers: left pair = leftPower, right pair = rightPower.
+    // All modules hold target angle 0 (wheels forward). Port of justAuto.
+    // ------------------------------------------------------------
+    private void setDrivePowers(double leftPower, double rightPower) {
+        runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  leftPower,  WHEELS_FORWARD_RAD);
+        runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   leftPower,  WHEELS_FORWARD_RAD);
+        runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, rightPower, WHEELS_FORWARD_RAD);
+        runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  rightPower, WHEELS_FORWARD_RAD);
     }
 
-    private void setDrivePowersAll(double power, double wheelAngle) {
-        runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  power, wheelAngle);
-        runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, power, wheelAngle);
-        runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   power, wheelAngle);
-        runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  power, wheelAngle);
-    }
-
-    // ============================================================
-    // Swerve module control
-    // ============================================================
+    // ------------------------------------------------------------
+    // Swerve module control (verbatim from justAuto)
+    // ------------------------------------------------------------
     private void runModule(DcMotor driveMotor, CRServo steerServo, AnalogInput encoder,
                            double encoderOffset, double speed, double targetAngle) {
-        double rawAngle     = getRawAngle(encoder);
+        double rawAngle = getRawAngle(encoder);
         double currentAngle = rawAngle - encoderOffset;
         currentAngle = wrapAngle(currentAngle);
 
@@ -1495,8 +981,11 @@ public class omnipotentBackAuto extends LinearOpMode {
             speed *= -1;
         }
 
-        double servoPower = STEER_KP * delta * -1;
+        double servoPower = STEER_KP * delta;
+        servoPower *= -1; // Steering Fix: invert servo power to match physical rotation
+
         if (Math.abs(servoPower) < STEER_DEADBAND) servoPower = 0;
+
         servoPower = Math.max(-1, Math.min(1, servoPower));
 
         steerServo.setPower(servoPower);
@@ -1508,10 +997,6 @@ public class omnipotentBackAuto extends LinearOpMode {
     // ============================================================
     private double readPosXInches() {
         return odo.getPosX(DistanceUnit.INCH);
-    }
-
-    private double readPosYInches() {
-        return odo.getPosY(DistanceUnit.INCH) * Y_DIRECTION_SIGN;
     }
 
     private double readHeadingDegrees() {

@@ -3,7 +3,6 @@ package org.firstinspires.ftc.teamcode.Auto;
 
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
-import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.CRServo;
@@ -16,20 +15,14 @@ import com.qualcomm.robotcore.util.ElapsedTime;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
-import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
-import org.firstinspires.ftc.vision.VisionPortal;
-import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
-import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 
-import java.util.List;
-@Disabled
-@Autonomous(name = "allmightyAuto", group = "Swerve")
-public class allmightyAuto extends LinearOpMode {
+@Autonomous(name = "emergencyAuto", group = "Swerve")
+public class emergencyAuto extends LinearOpMode {
 
     // ============================================================
     // HARDWARE
     // ============================================================
-    private DcMotor frontLeftDrive, frontRightDrive, backLeftDrive, backRightDrive;
+    private DcMotor frontLeftDrive, frontRightDrive, backRightDrive;
     private CRServo frontLeftSteer, frontRightSteer, backLeftSteer, backRightSteer;
     private AnalogInput frontLeftEncoder, frontRightEncoder, backLeftEncoder, backRightEncoder;
     private GoBildaPinpointDriver odo;
@@ -38,12 +31,11 @@ public class allmightyAuto extends LinearOpMode {
     private DcMotorEx topIntake, bottomIntake;
     private DcMotor leftFly, rightFly;
     private Servo blocker;
-    private Servo leftTurret, rightTurret;
-    private Servo light;
+   // private Servo leftTurret, rightTurret;
+   // private Servo light;
 
-    private AprilTagProcessor aprilTagProcessor;
-    private VisionPortal visionPortal;
-    private double turretStartPos = 0.71;
+   // private AprilTagProcessor aprilTagProcessor;
+   // private VisionPortal visionPortal;
 
     final int TARGET_TAG_ID = 20;
     final double LIGHT_TAG_NOT_SEEN  = 0.278;
@@ -63,7 +55,7 @@ public class allmightyAuto extends LinearOpMode {
     // ============================================================
     final double FRONT_LEFT_OFFSET  = 0.1200;
     final double FRONT_RIGHT_OFFSET = 1.3861;
-    final double BACK_LEFT_OFFSET   = 1.6965;
+    final double BACK_LEFT_OFFSET   = 1.9287;
     final double BACK_RIGHT_OFFSET  = 0.8225;
 
     // ============================================================
@@ -128,6 +120,7 @@ public class allmightyAuto extends LinearOpMode {
 
     final double WHEELS_FORWARD_RAD  = 0.0;
     final double WHEELS_SIDEWAYS_RAD = Math.PI / 2;
+    final double WHEELS_IDK_DIAG = Math.PI/4;
 
     final double MM_PER_INCH = 25.4;
 
@@ -166,7 +159,7 @@ public class allmightyAuto extends LinearOpMode {
     private final ElapsedTime matchTimer = new ElapsedTime();
     final double MATCH_CUTOFF_SECONDS = 28.0;
 
-    final double FORWARD_COLLECT_FEET               = 3.5;
+    final double FORWARD_COLLECT_FEET               = 3;
     final double COLLECT_PUSH_FEET                  = 0.5;
     // Fraction of the full forward+push distance at which to turn the intake on.
     // 0.5 = halfway. Tune up/down as desired.
@@ -188,20 +181,20 @@ public class allmightyAuto extends LinearOpMode {
         blockerBlocked();
 
         // Hold turret in start position during init
-        leftTurret.setPosition(turretStartPos);
-        rightTurret.setPosition(turretStartPos);
+        //leftTurret.setPosition(turretStartPos);
+        //rightTurret.setPosition(turretStartPos);
 
         // Run camera + light logic while initialized (before start is pressed)
         while (!isStarted() && !isStopRequested()) {
-            updateLightFromAprilTag();
+            //updateLightFromAprilTag();
 
             telemetry.addLine("omnipotentBackAuto initialized. Waiting for start.");
             telemetry.addData("Pinpoint status", odo.getDeviceStatus());
             telemetry.addData("Battery", "%.2f V", voltageSensor.getVoltage());
 
             // Re-assert turret hold every loop
-            leftTurret.setPosition(turretStartPos);
-            rightTurret.setPosition(turretStartPos);
+            //leftTurret.setPosition(turretStartPos);
+            //rightTurret.setPosition(turretStartPos);
 
             telemetry.update();
         }
@@ -214,8 +207,8 @@ public class allmightyAuto extends LinearOpMode {
         matchTimer.reset();
 
         // Set turret to start position (kept in case anything moved it)
-        leftTurret.setPosition(turretStartPos);
-        rightTurret.setPosition(turretStartPos);
+        // leftTurret.setPosition(turretStartPos);
+        //rightTurret.setPosition(turretStartPos);
 
         // ====================================================
         // INITIAL LAUNCH — fire preloaded element
@@ -229,21 +222,21 @@ public class allmightyAuto extends LinearOpMode {
         // ====================================================
         while (opModeIsActive() && !matchTimeUp()) {
 
-            updateLightFromAprilTag();
+           // updateLightFromAprilTag();
 
             // 1. Single continuous forward leg: drives full distance,
             //    turns intake on at INTAKE_ON_FRACTION of the way,
             //    runs until stall or full distance + grace window.
             collectCycleForward();
             stopIntake();
-            if (matchTimeUp()) break;
-
+            //if (matchTimeUp()) break;
+            break;
             // 2. Drive back to start; flywheels spin up immediately at start of return
-            driveBackToStartWithFlywheelSpinup(startX);
-            if (matchTimeUp()) break;
+            //driveBackToStartWithFlywheelSpinup(startX);
+            //if (matchTimeUp()) break;
 
             // 3. Launch sequence — only waits for REMAINDER of spinup time
-            launchSequence();
+            // launchSequence();
         }
 
         // ====================================================
@@ -267,7 +260,7 @@ public class allmightyAuto extends LinearOpMode {
     // target tag and sets the light servo accordingly. Safe to call from
     // both init and runtime loops.
     // ============================================================
-    private void updateLightFromAprilTag() {
+    /*private void updateLightFromAprilTag() {
         AprilTagDetection targetTag = null;
         List<AprilTagDetection> currentDetections = aprilTagProcessor.getDetections();
         if (currentDetections != null) {
@@ -292,7 +285,7 @@ public class allmightyAuto extends LinearOpMode {
         }
         light.setPosition(lightPosition);
     }
-
+*/
     // ============================================================
     // startLauncherWithSpinupTimer — turns the flywheel on AND starts/
     // resets the spinup timer. Use this the first time the flywheel
@@ -374,13 +367,13 @@ public class allmightyAuto extends LinearOpMode {
     // ============================================================
     private void collectCycleForward() {
         double totalInches = (FORWARD_COLLECT_FEET + COLLECT_PUSH_FEET) * 12.0;
-        double intakeOnDistance = totalInches * INTAKE_ON_FRACTION;
+       // double intakeOnDistance = totalInches * INTAKE_ON_FRACTION;
 
         odo.update();
         double startPos  = readPosXInches();
         double targetPos = startPos + totalInches;
 
-        alignWheelsTo(WHEELS_FORWARD_RAD, "ALIGNING FORWARD (cycle)");
+        alignWheelsTo(WHEELS_IDK_DIAG, "ALIGNING FORWARD (cycle)");
 
         boolean intakeOn          = false;
         boolean distanceReached   = false;
@@ -408,10 +401,10 @@ public class allmightyAuto extends LinearOpMode {
             double error      = targetPos - currentPos;
 
             // --- Turn intake ON at INTAKE_ON_FRACTION of total distance ---
-            if (!intakeOn && Math.abs(traveled) >= intakeOnDistance) {
+            /*if (!intakeOn && Math.abs(traveled) >= intakeOnDistance) {
                 setIntakePower(INTAKE_FORWARD_POWER);
                 intakeOn = true;
-            }
+            }*/
 
             // --- Stall watch (only meaningful once intake is on) ---
             if (intakeOn) {
@@ -477,11 +470,11 @@ public class allmightyAuto extends LinearOpMode {
 
             double powerLeft  = clamp(basePower - correction, -1.0, 1.0);
             double powerRight = clamp(basePower + correction, -1.0, 1.0);
-            setDrivePowersLeftRight(powerLeft, powerRight, WHEELS_FORWARD_RAD);
+            setDrivePowersLeftRight(powerLeft, powerRight, WHEELS_IDK_DIAG);
 
             telemetry.addData("Phase", "COLLECT CYCLE FORWARD");
             telemetry.addData("Traveled / Total (in)", "%.2f / %.2f", traveled, totalInches);
-            telemetry.addData("Intake on at (in)", "%.2f", intakeOnDistance);
+          //  telemetry.addData("Intake on at (in)", "%.2f", intakeOnDistance);
             telemetry.addData("Intake", intakeOn ? "ON" : "waiting");
             telemetry.addData("Error (in)", "%.2f", error);
             telemetry.addData("Distance reached", distanceReached);
@@ -789,7 +782,7 @@ public class allmightyAuto extends LinearOpMode {
     private void initializeHardware() {
         frontLeftDrive  = hardwareMap.get(DcMotor.class, "frontLeftDrive");
         frontRightDrive = hardwareMap.get(DcMotor.class, "frontRightDrive");
-        backLeftDrive   = hardwareMap.get(DcMotor.class, "backLeftDrive");
+        //backLeftDrive   = hardwareMap.get(DcMotor.class, "backLeftDrive");
         backRightDrive  = hardwareMap.get(DcMotor.class, "backRightDrive");
 
         frontLeftSteer  = hardwareMap.get(CRServo.class, "frontLeftSteer");
@@ -805,16 +798,18 @@ public class allmightyAuto extends LinearOpMode {
         voltageSensor = hardwareMap.voltageSensor.iterator().next();
 
         frontLeftDrive.setDirection(DcMotor.Direction.REVERSE);
-        backLeftDrive.setDirection(DcMotor.Direction.REVERSE);
+       // backLeftDrive.setDirection(DcMotor.Direction.REVERSE);
         frontRightDrive.setDirection(DcMotor.Direction.FORWARD);
         backRightDrive.setDirection(DcMotor.Direction.FORWARD);
 
         frontLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         frontRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-        backLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+       // backLeftDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         backRightDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
-        resetMotors(frontLeftDrive, frontRightDrive, backLeftDrive, backRightDrive);
+       // resetMotors(frontLeftDrive, frontRightDrive, backLeftDrive, backRightDrive);
+        resetMotors(frontLeftDrive, frontRightDrive, backRightDrive);
+
 
         topIntake    = hardwareMap.get(DcMotorEx.class, "topIntake");
         bottomIntake = hardwareMap.get(DcMotorEx.class, "bottomIntake");
@@ -833,13 +828,13 @@ public class allmightyAuto extends LinearOpMode {
 
         blocker = hardwareMap.get(Servo.class, "blocker");
 
-        leftTurret  = hardwareMap.get(Servo.class, "leftTurret");
-        rightTurret = hardwareMap.get(Servo.class, "rightTurret");
-        light       = hardwareMap.get(Servo.class, "light");
+        //leftTurret  = hardwareMap.get(Servo.class, "leftTurret");
+        //rightTurret = hardwareMap.get(Servo.class, "rightTurret");
+//        light       = hardwareMap.get(Servo.class, "light");
 
         // Hold turret at start position immediately after binding it
-        leftTurret.setPosition(turretStartPos);
-        rightTurret.setPosition(turretStartPos);
+        //leftTurret.setPosition(turretStartPos);
+        //rightTurret.setPosition(turretStartPos);
 
         odo = hardwareMap.get(GoBildaPinpointDriver.class, "odo");
         odo.setOffsets(X_POD_OFFSET_MM, Y_POD_OFFSET_MM, DistanceUnit.MM);
@@ -847,7 +842,7 @@ public class allmightyAuto extends LinearOpMode {
         odo.setEncoderDirections(X_POD_DIRECTION, Y_POD_DIRECTION);
         odo.resetPosAndIMU();
 
-        initializeVision();
+        //initializeVision();
     }
 
     // ============================================================
@@ -942,7 +937,7 @@ public class allmightyAuto extends LinearOpMode {
     }
 
     public void startLauncher() {
-        double a = 1; //because launchercompensatedpower isn't enough
+        double a = 1;
         double power = launcherCompensatedPower() * a;
         leftFly.setPower(power);
         rightFly.setPower(power);
@@ -1385,7 +1380,9 @@ public class allmightyAuto extends LinearOpMode {
 
             runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  speedFL, angleFL);
             runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, speedFR, angleFR);
-            runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   speedBL, angleBL);
+           // runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   speedBL, angleBL);
+            BLrunModule(backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   speedBL, angleBL);
+
             runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  speedBR, angleBR);
 
             telemetry.addData("Phase", "CORRECTING HEADING");
@@ -1401,7 +1398,7 @@ public class allmightyAuto extends LinearOpMode {
 
         frontLeftDrive.setPower(0);
         frontRightDrive.setPower(0);
-        backLeftDrive.setPower(0);
+       // backLeftDrive.setPower(0);
         backRightDrive.setPower(0);
         frontLeftSteer.setPower(0);
         frontRightSteer.setPower(0);
@@ -1425,7 +1422,9 @@ public class allmightyAuto extends LinearOpMode {
 
             runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  0, targetAngle);
             runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, 0, targetAngle);
-            runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   0, targetAngle);
+          //  runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   0, targetAngle);
+            BLrunModule(backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   0, targetAngle);
+
             runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  0, targetAngle);
 
             boolean aligned = isAlignedTo(errFL) && isAlignedTo(errFR)
@@ -1463,7 +1462,9 @@ public class allmightyAuto extends LinearOpMode {
     // ============================================================
     private void setDrivePowersLeftRight(double leftPower, double rightPower, double wheelAngle) {
         runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  leftPower,  wheelAngle);
-        runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   leftPower,  wheelAngle);
+      //  runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   leftPower,  wheelAngle);
+        BLrunModule(backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   leftPower, wheelAngle);
+
         runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, rightPower, wheelAngle);
         runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  rightPower, wheelAngle);
     }
@@ -1471,14 +1472,15 @@ public class allmightyAuto extends LinearOpMode {
     private void setDrivePowersFrontBack(double frontPower, double backPower, double wheelAngle) {
         runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  frontPower, wheelAngle);
         runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, frontPower, wheelAngle);
-        runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   backPower,  wheelAngle);
+      //  runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   backPower,  wheelAngle);
+        BLrunModule(backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   backPower,  wheelAngle);
         runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  backPower,  wheelAngle);
     }
 
     private void setDrivePowersAll(double power, double wheelAngle) {
         runModule(frontLeftDrive,  frontLeftSteer,  frontLeftEncoder,  FRONT_LEFT_OFFSET,  power, wheelAngle);
         runModule(frontRightDrive, frontRightSteer, frontRightEncoder, FRONT_RIGHT_OFFSET, power, wheelAngle);
-        runModule(backLeftDrive,   backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   power, wheelAngle);
+        BLrunModule(backLeftSteer,   backLeftEncoder,   BACK_LEFT_OFFSET,   power, wheelAngle);
         runModule(backRightDrive,  backRightSteer,  backRightEncoder,  BACK_RIGHT_OFFSET,  power, wheelAngle);
     }
 
@@ -1504,6 +1506,26 @@ public class allmightyAuto extends LinearOpMode {
 
         steerServo.setPower(servoPower);
         driveMotor.setPower(speed);
+    }
+
+    private void BLrunModule(CRServo steerServo, AnalogInput encoder,
+                           double encoderOffset, double speed, double targetAngle) {
+        double rawAngle     = getRawAngle(encoder);
+        double currentAngle = rawAngle - encoderOffset;
+        currentAngle = wrapAngle(currentAngle);
+
+        double delta = wrapAngle(targetAngle - currentAngle);
+
+        if (Math.abs(delta) > Math.PI / 2) {
+            delta = wrapAngle(delta + Math.PI);
+            speed *= -1;
+        }
+
+        double servoPower = STEER_KP * delta * -1;
+        if (Math.abs(servoPower) < STEER_DEADBAND) servoPower = 0;
+        servoPower = Math.max(-1, Math.min(1, servoPower));
+
+        steerServo.setPower(servoPower);
     }
 
     // ============================================================
@@ -1547,7 +1569,7 @@ public class allmightyAuto extends LinearOpMode {
     // ============================================================
     // VISION INIT
     // ============================================================
-    private void initializeVision() {
+  /*  private void initializeVision() {
         aprilTagProcessor = new AprilTagProcessor.Builder()
                 .setDrawAxes(true)
                 .setDrawCubeProjection(false)
@@ -1565,7 +1587,7 @@ public class allmightyAuto extends LinearOpMode {
 
         aprilTagProcessor.setDecimation(3);
     }
-
+*/
     // ============================================================
     // UTILITY HELPERS
     // ============================================================
